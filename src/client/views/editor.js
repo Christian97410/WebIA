@@ -412,8 +412,7 @@ export class EditorView {
       e.preventDefault();
       const url = e.target.dataset.url;
       if (window.__TAURI__) {
-        const { open } = await import('@tauri-apps/plugin-shell');
-        open(url);
+        window.__TAURI__.shell.open(url);
       } else {
         window.open(url, '_blank');
       }
@@ -503,8 +502,7 @@ export class EditorView {
       // Try to restore key from Tauri Stronghold first
       if (window.__TAURI__) {
         try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          const storedKey = await invoke('get_token', { provider: 'anthropic' });
+          const storedKey = await window.__TAURI__.core.invoke('get_token', { provider: 'anthropic' });
           if (storedKey) {
             const result = await api.post('/api/ai/key', { key: storedKey });
             if (result.valid) {
@@ -674,8 +672,7 @@ export class EditorView {
         // Store in Tauri Stronghold if available
         if (window.__TAURI__) {
           try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('store_token', { provider: 'anthropic', token: key });
+            await window.__TAURI__.core.invoke('store_token', { provider: 'anthropic', token: key });
           } catch {}
         }
         this.setChatConnected('Claude');
@@ -3135,10 +3132,10 @@ export class EditorView {
 
   // Auto-update listener (Tauri only)
   async listenForUpdates() {
-    if (!window.__TAURI__) return;
+    const tauri = window.__TAURI__;
+    if (!tauri?.event?.listen) return;
     try {
-      const { listen } = await import('@tauri-apps/api/event');
-      listen('update-available', (event) => {
+      tauri.event.listen('update-available', (event) => {
         const { version } = event.payload;
         this.showUpdateBanner(version);
       });
@@ -3158,8 +3155,7 @@ export class EditorView {
         btn.textContent = 'Installing...';
         btn.disabled = true;
         try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('install_update');
+          await window.__TAURI__.core.invoke('install_update');
         } catch (err) {
           btn.textContent = `Update v${version}`;
           btn.disabled = false;

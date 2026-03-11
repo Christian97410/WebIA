@@ -6,6 +6,37 @@ export class ProjectsView {
     this.onOpen = onOpen;
     this.el = h('div', { className: 'projects-view' });
     this.load();
+    this.listenForUpdates();
+  }
+
+  async listenForUpdates() {
+    const tauri = window.__TAURI__;
+    if (!tauri?.event?.listen) return;
+    try {
+      tauri.event.listen('update-available', (event) => {
+        const { version } = event.payload;
+        this.showUpdateBanner(version);
+      });
+    } catch {}
+  }
+
+  showUpdateBanner(version) {
+    const header = this.el.querySelector('.projects-header');
+    if (!header || header.querySelector('.update-btn')) return;
+    const btn = h('button', {
+      className: 'update-btn',
+      onClick: async () => {
+        btn.textContent = 'Installing...';
+        btn.disabled = true;
+        try {
+          await window.__TAURI__.core.invoke('install_update');
+        } catch {
+          btn.textContent = `Update v${version}`;
+          btn.disabled = false;
+        }
+      },
+    }, `Update v${version}`);
+    header.appendChild(btn);
   }
 
   async load() {
