@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join, dirname, resolve } from 'path';
 import { existsSync } from 'fs';
 
@@ -402,7 +402,6 @@ async function applyChangesToProject(projectPath, changes) {
  */
 async function cleanSandbox(sandboxDir) {
   try {
-    const { rm } = await import('fs/promises');
     await rm(sandboxDir, { recursive: true, force: true });
   } catch {
     // Ignore — sandbox may not exist.

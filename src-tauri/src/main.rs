@@ -253,8 +253,8 @@ fn main() {
 
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    // Wait a few seconds before checking so the app loads first.
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    // Wait for the sidecar + webview to fully load before checking.
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
 
                     use tauri_plugin_updater::UpdaterExt;
                     let update = match handle.updater().unwrap().check().await {

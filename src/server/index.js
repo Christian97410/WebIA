@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer, request as httpRequest } from 'http';
+import { exec } from 'child_process';
 import { WebSocketServer } from 'ws';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -180,11 +181,9 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
     // Auto-open browser (skip when running as Tauri sidecar)
     if (!process.env.TAURI_ENV && !process.argv.includes('--no-open')) {
-      import('child_process').then(({ exec }) => {
-        const cmd = process.platform === 'darwin' ? 'open' :
-                    process.platform === 'win32' ? 'start' : 'xdg-open';
-        exec(`${cmd} ${url}`);
-      });
+      const cmd = process.platform === 'darwin' ? 'open' :
+                  process.platform === 'win32' ? 'start' : 'xdg-open';
+      exec(`${cmd} ${url}`);
     }
   });
 

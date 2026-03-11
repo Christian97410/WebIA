@@ -3,6 +3,8 @@ import { readFile, rm, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { spawn } from 'child_process';
+import { createServer as createNetServer } from 'net';
+import http from 'http';
 import { getShellPath, resolveCmd } from '../shell-path.js';
 
 const ENHANCED_PATH = getShellPath();
@@ -54,14 +56,12 @@ async function detectFramework(projectDir) {
  */
 function findPort() {
   return new Promise((resolve, reject) => {
-    import('net').then(({ createServer }) => {
-      const srv = createServer();
-      srv.listen(0, () => {
-        const port = srv.address().port;
-        srv.close(() => resolve(port));
-      });
-      srv.on('error', reject);
+    const srv = createNetServer();
+    srv.listen(0, () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
     });
+    srv.on('error', reject);
   });
 }
 
@@ -170,7 +170,7 @@ function waitForServer(port, childProcess, timeoutMs = 60000) {
         childProcess.removeListener('exit', onExit);
         return reject(new Error('Dev server startup timed out'));
       }
-      import('http').then(http => {
+      {
         const req = http.get(`http://localhost:${port}`, (res) => {
           if (!done) {
             done = true;
@@ -185,7 +185,7 @@ function waitForServer(port, childProcess, timeoutMs = 60000) {
           req.destroy();
           setTimeout(check, 500);
         });
-      });
+      }
     };
     check();
   });

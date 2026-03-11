@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import simpleGit from 'simple-git';
@@ -21,7 +21,7 @@ async function saveGitHubToken(token) {
 }
 
 async function deleteGitHubToken() {
-  try { const { unlink } = await import('fs/promises'); await unlink(GH_TOKEN_FILE); } catch {}
+  try { await unlink(GH_TOKEN_FILE); } catch {}
 }
 
 // Configure git remote URL with token for auth
