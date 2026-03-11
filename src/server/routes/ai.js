@@ -1,11 +1,15 @@
 import { Router } from 'express';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { shellEnv, resolveCmd } from '../shell-path.js';
 
 // Lazy-load the SDK route — falls back gracefully if not installed.
 let sdkRouter = null;
 let sdkAvailable = false;
 let sdkInitDone = false;
+
+// Auth status cache (avoid spawning claude every 3s during polling)
+let authCache = { authenticated: false, ts: 0 };
+const AUTH_CACHE_TTL = 5000; // 5s
 
 async function initSDK() {
   if (sdkInitDone) return;
@@ -113,7 +117,7 @@ export async function createAIRouter() {
 
   // ── GET /setup/status ────────────────────────────────────────────────────
   // Detect Claude Code CLI + SDK + auth state for onboarding flow.
-  router.get('/setup/status', async (req, res) => {
+  router.get('/setup/status', (req, res) => {
     let cliInstalled = false;
     let cliPath = null;
     let authenticated = false;
@@ -124,25 +128,29 @@ export async function createAIRouter() {
       cliInstalled = cliPath !== 'claude'; // resolveCmd returns the name if not found
     } catch {}
 
-    // Check auth via `claude auth status` (outputs JSON with loggedIn field)
+    // Check auth via `claude auth status` (sync, with cache to avoid spawning every 3s)
     if (cliInstalled) {
-      try {
-        const authResult = await new Promise((resolve) => {
-          const env = shellEnv();
-          const child = spawn(cliPath, ['auth', 'status'], {
-            env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-          let out = '';
-          child.stdout.on('data', (d) => { out += d.toString(); });
-          child.stderr.on('data', (d) => { out += d.toString(); });
-          child.on('close', () => resolve(out));
-          child.on('error', () => resolve(''));
-          setTimeout(() => { child.kill(); resolve(''); }, 5000);
-        });
-        const parsed = JSON.parse(authResult);
-        authenticated = !!parsed.loggedIn;
-      } catch {}
+      const now = Date.now();
+      if (authCache.authenticated || now - authCache.ts > AUTH_CACHE_TTL) {
+        if (!authCache.authenticated) {
+          // Only re-check if not yet authenticated
+          try {
+            const out = execFileSync(cliPath, ['auth', 'status'], {
+              env: shellEnv(),
+              timeout: 4000,
+              encoding: 'utf-8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            const parsed = JSON.parse(out);
+            authCache = { authenticated: !!parsed.loggedIn, ts: now };
+          } catch {
+            authCache = { authenticated: false, ts: now };
+          }
+        }
+        authenticated = authCache.authenticated;
+      } else {
+        authenticated = authCache.authenticated;
+      }
     }
 
     res.json({
