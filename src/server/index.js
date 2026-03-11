@@ -177,6 +177,41 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   setupWebSocket(wss);
 
+  // ── Update check endpoint (works without Tauri IPC) ──
+  const UPDATE_URL = 'https://github.com/Christian97410/WebIA/releases/latest/download/latest.json';
+  let cachedUpdate = null;
+
+  // Parse --version=X.Y.Z from CLI args
+  const versionArg = process.argv.find(a => a.startsWith('--version='));
+  const currentVersion = versionArg ? versionArg.split('=')[1] : null;
+
+  app.get('/api/update-check', async (req, res) => {
+    if (!currentVersion) return res.json({ available: false, reason: 'dev-mode' });
+    if (cachedUpdate) return res.json(cachedUpdate);
+
+    try {
+      const resp = await fetch(UPDATE_URL);
+      if (!resp.ok) return res.json({ available: false });
+      const data = await resp.json();
+      const latest = data.version;
+      const available = latest && latest !== currentVersion && compareVersions(latest, currentVersion) > 0;
+      cachedUpdate = { available, currentVersion, latestVersion: latest, downloadUrl: `https://github.com/Christian97410/WebIA/releases/tag/v${latest}` };
+      res.json(cachedUpdate);
+    } catch {
+      res.json({ available: false });
+    }
+  });
+
+  function compareVersions(a, b) {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+      if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    }
+    return 0;
+  }
+
   // If launched with a project path, auto-open it
   const state = { currentProject: projectPath };
 

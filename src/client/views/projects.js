@@ -10,31 +10,18 @@ export class ProjectsView {
   }
 
   async listenForUpdates() {
-    const tauri = window.__TAURI__;
-    if (!tauri?.event?.listen) return;
     try {
-      tauri.event.listen('update-available', (event) => {
-        const { version } = event.payload;
-        this.showUpdateBanner(version);
-      });
+      const data = await api.get('/api/update-check');
+      if (data.available) this.showUpdateBanner(data.latestVersion, data.downloadUrl);
     } catch {}
   }
 
-  showUpdateBanner(version) {
+  showUpdateBanner(version, downloadUrl) {
     const header = this.el.querySelector('.projects-header');
     if (!header || header.querySelector('.update-btn')) return;
     const btn = h('button', {
       className: 'update-btn',
-      onClick: async () => {
-        btn.textContent = 'Installing...';
-        btn.disabled = true;
-        try {
-          await window.__TAURI__.core.invoke('install_update');
-        } catch {
-          btn.textContent = `Update v${version}`;
-          btn.disabled = false;
-        }
-      },
+      onClick: () => { window.open(downloadUrl, '_blank'); },
     }, `Update v${version}`);
     header.appendChild(btn);
   }

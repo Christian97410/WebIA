@@ -215,7 +215,11 @@ fn main() {
                 let (mut _rx, _child) = shell
                     .sidecar("wia-server")
                     .expect("failed to locate wia-server sidecar")
-                    .args([format!("--port={}", port), "--no-open".to_string()])
+                    .args([
+                        format!("--port={}", port),
+                        "--no-open".to_string(),
+                        format!("--version={}", app.handle().package_info().version),
+                    ])
                     .spawn()
                     .expect("failed to spawn wia-server");
 

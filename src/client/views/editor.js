@@ -3508,35 +3508,19 @@ export class EditorView {
 
   // Auto-update listener (Tauri only)
   async listenForUpdates() {
-    const tauri = window.__TAURI__;
-    if (!tauri?.event?.listen) return;
     try {
-      tauri.event.listen('update-available', (event) => {
-        const { version } = event.payload;
-        this.showUpdateBanner(version);
-      });
-    } catch {
-      // Not in Tauri or plugin not available.
-    }
+      const data = await api.get('/api/update-check');
+      if (data.available) this.showUpdateBanner(data.latestVersion, data.downloadUrl);
+    } catch {}
   }
 
-  showUpdateBanner(version) {
-    // Insert a subtle banner in the topbar-right area
+  showUpdateBanner(version, downloadUrl) {
     const topbarRight = this.el.querySelector('.topbar-right');
     if (!topbarRight || topbarRight.querySelector('.update-btn')) return;
 
     const btn = h('button', {
       className: 'update-btn',
-      onClick: async () => {
-        btn.textContent = 'Installing...';
-        btn.disabled = true;
-        try {
-          await window.__TAURI__.core.invoke('install_update');
-        } catch (err) {
-          btn.textContent = `Update v${version}`;
-          btn.disabled = false;
-        }
-      },
+      onClick: () => { window.open(downloadUrl, '_blank'); },
     }, `Update v${version}`);
 
     topbarRight.prepend(h('div', { className: 'topbar-separator' }));
