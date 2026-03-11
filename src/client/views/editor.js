@@ -461,11 +461,12 @@ export class EditorView {
     try {
       // 1. Check SDK setup status first
       const setup = await api.get('/api/ai/setup/status');
-      if (setup.ready) {
+      if (setup.ready || setup.sdkAvailable) {
         this.setChatConnected('Claude Code');
         return;
       }
-      if (setup.sdkAvailable) {
+      // CLI installed + authenticated = good to go (SDK will init when needed)
+      if (setup.cliInstalled && setup.authenticated) {
         this.setChatConnected('Claude Code');
         return;
       }
@@ -693,6 +694,12 @@ export class EditorView {
       const keyInput = this.chatAuthScreen.querySelector('.chat-auth-input');
       keyBtn.addEventListener('click', () => this._submitApiKey());
       keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this._submitApiKey(); });
+      return;
+    }
+
+    // CLI installed + authenticated → should be connected, force it
+    if (setup.authenticated) {
+      this.setChatConnected('Claude Code');
       return;
     }
 
