@@ -218,11 +218,8 @@ fn main() {
                         sleep(Duration::from_millis(200));
                     }
                 });
-            }
 
-            // Check for updates in the background (production only).
-            #[cfg(not(debug_assertions))]
-            {
+                // Check for updates in the background.
                 let handle = app.handle().clone();
                 let update_port = port;
                 tauri::async_runtime::spawn(async move {
