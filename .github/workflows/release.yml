@@ -48,12 +48,10 @@ jobs:
           APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/WebIA.app"
           DMG_NAME="WebIA_${{ github.ref_name }}_aarch64.dmg"
 
-          # Create a temporary directory for DMG contents
-          mkdir -p dmg-contents
+          mkdir -p release-assets dmg-contents
           cp -R "$APP_PATH" dmg-contents/
           ln -s /Applications dmg-contents/Applications
 
-          # Create DMG
           hdiutil create -volname "WebIA" \
             -srcfolder dmg-contents \
             -ov -format UDZO \
