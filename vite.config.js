@@ -6,6 +6,13 @@ export default defineConfig({
   build: {
     outDir: '../../dist',
     emptyOutDir: true,
+    rollupOptions: {
+      external: [
+        '@tauri-apps/api/core',
+        '@tauri-apps/api/event',
+        '@tauri-apps/plugin-shell',
+      ],
+    },
   },
   server: {
     port: 3000,

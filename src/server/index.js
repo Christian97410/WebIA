@@ -134,12 +134,14 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
     const url = `http://localhost:${port}`;
     console.log(`WebIA running at ${url}`);
 
-    // Auto-open browser
-    import('child_process').then(({ exec }) => {
-      const cmd = process.platform === 'darwin' ? 'open' :
-                  process.platform === 'win32' ? 'start' : 'xdg-open';
-      exec(`${cmd} ${url}`);
-    });
+    // Auto-open browser (skip when running as Tauri sidecar)
+    if (!process.env.TAURI_ENV && !process.argv.includes('--no-open')) {
+      import('child_process').then(({ exec }) => {
+        const cmd = process.platform === 'darwin' ? 'open' :
+                    process.platform === 'win32' ? 'start' : 'xdg-open';
+        exec(`${cmd} ${url}`);
+      });
+    }
   });
 
   return server;
