@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { readFile, rm, readdir } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { spawn } from 'child_process';
 
@@ -62,6 +63,35 @@ function findPort() {
 /**
  * Start the project's dev server on a given port
  */
+function needsInstall(dir) {
+  return !existsSync(join(dir, 'node_modules'));
+}
+
+function installDeps(dir, entry) {
+  console.log(`[devserver] node_modules missing in ${dir}, running npm install...`);
+  entry.status = 'installing';
+  entry.logs += '[WebIA] Installing dependencies...\n';
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('npm', ['install'], {
+      cwd: dir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    });
+    child.stdout.on('data', (d) => { entry.logs += d.toString(); });
+    child.stderr.on('data', (d) => { entry.logs += d.toString(); });
+    child.on('close', (code) => {
+      if (code === 0) {
+        entry.logs += '[WebIA] Dependencies installed.\n';
+        resolve();
+      } else {
+        reject(new Error(`npm install failed (code ${code})`));
+      }
+    });
+    setTimeout(() => { child.kill(); reject(new Error('npm install timed out')); }, 120000);
+  });
+}
+
 async function startDevServer(info, port) {
   const { framework, dir } = info;
 
@@ -394,43 +424,63 @@ export function createDevServerRouter() {
       }
 
       const port = await findPort();
-      const child = await startDevServer(info, port);
 
-      const entry = { process: child, port, framework: info.framework, projectDir: info.dir, status: 'starting', logs: '' };
-
-      child.stdout.on('data', (d) => { entry.logs += d.toString(); });
-      child.stderr.on('data', (d) => { entry.logs += d.toString(); });
-
-      child.on('exit', (code) => {
-        console.log(`[devserver] ${info.framework} exited with code ${code}`);
-        if (entry.status === 'starting') {
-          entry.status = 'crashed';
-          entry.error = `Process exited with code ${code}`;
-          // Keep entry for 15s so client can read the error + logs
-          setTimeout(() => servers.delete(dir), 15000);
-        } else {
-          servers.delete(dir);
-        }
-      });
+      // Create entry immediately so client can poll status
+      const entry = { process: null, port, framework: info.framework, projectDir: info.dir, status: 'starting', logs: '' };
       servers.set(dir, entry);
 
-      // Wait in background — don't block the HTTP response
-      waitForServer(port, child).then(() => {
-        entry.status = 'ready';
-        console.log(`[devserver] ${info.framework} ready on port ${port}`);
-      }).catch((waitErr) => {
-        if (!child.killed && child.exitCode !== null) {
-          entry.status = 'crashed';
-          entry.error = waitErr.message;
-          console.log(`[devserver] ${info.framework} crashed: ${waitErr.message}`);
-        } else {
-          // Timeout but still alive
-          entry.status = 'ready';
-          console.log(`[devserver] Warning: timeout waiting for port ${port}, assuming ready`);
-        }
-      });
-
+      // Respond immediately — everything else happens in background
       res.json({ port, framework: info.framework, projectDir: info.dir, status: 'starting' });
+
+      // Background: install deps if needed, then start dev server
+      (async () => {
+        try {
+          // Step 1: install deps if node_modules is missing
+          if (needsInstall(info.dir)) {
+            await installDeps(info.dir, entry);
+          }
+
+          // Step 2: start the dev server
+          entry.status = 'starting';
+          const child = await startDevServer(info, port);
+          entry.process = child;
+
+          child.stdout.on('data', (d) => { entry.logs += d.toString(); });
+          child.stderr.on('data', (d) => { entry.logs += d.toString(); });
+
+          child.on('exit', (code) => {
+            console.log(`[devserver] ${info.framework} exited with code ${code}`);
+            if (entry.status === 'starting' || entry.status === 'installing') {
+              entry.status = 'crashed';
+              entry.error = `Process exited with code ${code}`;
+              setTimeout(() => servers.delete(dir), 15000);
+            } else {
+              servers.delete(dir);
+            }
+          });
+
+          // Step 3: wait for server to respond
+          waitForServer(port, child).then(() => {
+            entry.status = 'ready';
+            console.log(`[devserver] ${info.framework} ready on port ${port}`);
+          }).catch((waitErr) => {
+            if (!child.killed && child.exitCode !== null) {
+              entry.status = 'crashed';
+              entry.error = waitErr.message;
+              console.log(`[devserver] ${info.framework} crashed: ${waitErr.message}`);
+            } else {
+              entry.status = 'ready';
+              console.log(`[devserver] Warning: timeout waiting for port ${port}, assuming ready`);
+            }
+          });
+        } catch (err) {
+          entry.status = 'crashed';
+          entry.error = err.message;
+          entry.logs += `[WebIA] Error: ${err.message}\n`;
+          console.log(`[devserver] Failed to start: ${err.message}`);
+          setTimeout(() => servers.delete(dir), 15000);
+        }
+      })();
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

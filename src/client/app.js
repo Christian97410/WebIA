@@ -146,7 +146,12 @@ class App {
               if (s.logs.includes('compil') || s.logs.includes('Compil')) stepIdx = Math.max(stepIdx, 1);
               if (s.logs.includes('Ready') || s.logs.includes('ready') || s.logs.includes('started')) stepIdx = Math.max(stepIdx, 3);
             }
-            statusEl.textContent = steps[Math.min(stepIdx, steps.length - 1)];
+            // Show status based on server state
+            if (s.status === 'installing') {
+              statusEl.textContent = 'Installing dependencies...';
+            } else {
+              statusEl.textContent = steps[Math.min(stepIdx, steps.length - 1)];
+            }
 
             if (s.status === 'ready') return resolve(s);
             if (s.status === 'crashed') return reject(new Error(s.error || 'Dev server crashed'));

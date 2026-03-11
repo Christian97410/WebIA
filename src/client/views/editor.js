@@ -122,11 +122,20 @@ export class EditorView {
         }, `${this.zoom}%`),
       ),
 
-      // Right: undo/redo + preview + changes
+      // Right: undo/redo + code/preview + changes
       h('div', { className: 'topbar-right' },
         h('button', { className: 'topbar-btn', onClick: () => this.undo() }, '\u21A9'),
         h('button', { className: 'topbar-btn', onClick: () => this.redo() }, '\u21AA'),
         h('div', { className: 'topbar-separator' }),
+        (() => {
+          this._codeToggleBtn = h('button', {
+            className: 'topbar-btn',
+            onClick: () => this.toggleCodeMode(),
+            title: 'Toggle code editor',
+          });
+          this._codeToggleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          return this._codeToggleBtn;
+        })(),
         h('button', { className: 'topbar-btn', onClick: () => this.togglePreview() }, '\u25B6'),
         h('button', { className: 'topbar-btn', onClick: () => this.showChanges() }, 'Changes'),
       ),
@@ -271,6 +280,44 @@ export class EditorView {
     this.canvasWrapper.appendChild(this.iframeContainer);
     this.canvasWrapper.appendChild(this.overlay);
     center.appendChild(this.canvasWrapper);
+
+    // Code editor (hidden by default)
+    this.codeEditorWrapper = h('div', { className: 'code-editor-wrapper' });
+    this.codeEditorWrapper.style.display = 'none';
+
+    this._codeTabBar = h('div', { className: 'code-tabs' });
+    this._codeOpenTabs = []; // { path, name, modified }
+
+    this.codeTextarea = h('textarea', {
+      className: 'code-textarea',
+      spellcheck: 'false',
+      placeholder: 'Select a file to view its source...',
+    });
+    this.codeTextarea.addEventListener('input', () => {
+      this._codeModified = true;
+      this._updateCodeTab();
+    });
+    this.codeTextarea.addEventListener('keydown', (e) => {
+      // Tab inserts 2 spaces
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = this.codeTextarea.selectionStart;
+        const end = this.codeTextarea.selectionEnd;
+        this.codeTextarea.value = this.codeTextarea.value.substring(0, start) + '  ' + this.codeTextarea.value.substring(end);
+        this.codeTextarea.selectionStart = this.codeTextarea.selectionEnd = start + 2;
+        this._codeModified = true;
+        this._updateCodeTab();
+      }
+      // Cmd/Ctrl+S to save
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        this._saveCurrentCodeFile();
+      }
+    });
+
+    this.codeEditorWrapper.appendChild(this._codeTabBar);
+    this.codeEditorWrapper.appendChild(this.codeTextarea);
+    center.appendChild(this.codeEditorWrapper);
 
     // Splitter
     const splitter = h('div', { className: 'splitter-h' });
@@ -2290,6 +2337,217 @@ export class EditorView {
     }
   }
 
+  // Code editor mode
+  toggleCodeMode() {
+    this._codeMode = !this._codeMode;
+    this._codeToggleBtn.classList.toggle('active', this._codeMode);
+
+    const right = this.el.querySelector('.panel-right');
+    const panelLeft = this.el.querySelector('.panel-left');
+    const splitter = this.el.querySelector('.splitter-h');
+
+    if (this._codeMode) {
+      // Save any pending changes before switching if coming back later
+      this.canvasWrapper.style.display = 'none';
+      this.codeEditorWrapper.style.display = 'flex';
+      this.overlay.style.display = 'none';
+      right.style.display = 'none';
+      if (splitter) splitter.style.display = 'none';
+      this.chatPanel.style.display = 'none';
+      this.el.style.gridTemplateColumns = `var(--panel-w) 1fr 0`;
+
+      // Swap left panel content to file tree
+      this._renderFileTree(panelLeft);
+
+      // Auto-open current page file
+      if (this.activePage) {
+        this._openCodeFile(this.activePage.path || (this.projectPath + '/' + this.activePage.relativePath));
+      }
+    } else {
+      // Save before switching back
+      this._saveCurrentCodeFile();
+      this.canvasWrapper.style.display = '';
+      this.codeEditorWrapper.style.display = 'none';
+      this.overlay.style.display = '';
+      right.style.display = '';
+      if (splitter) splitter.style.display = '';
+      this.chatPanel.style.display = '';
+      this.el.style.gridTemplateColumns = `var(--panel-w) 1fr var(--panel-right-w)`;
+
+      // Restore left panel by re-rendering it
+      const newLeft = this.renderLeftPanel();
+      panelLeft.replaceWith(newLeft);
+      // Rebuild layers from iframe
+      const doc = this.iframe?.contentDocument;
+      if (doc?.body) this.buildLayersTree(doc.body);
+    }
+  }
+
+  _renderFileTree(panel) {
+    panel.innerHTML = '';
+    panel.appendChild(h('div', { className: 'panel-section-header' }, 'Files'));
+
+    const tree = h('div', { className: 'code-file-tree' });
+    panel.appendChild(tree);
+
+    // Build tree from this.files
+    const root = {};
+    for (const f of this.files) {
+      const rel = f.relativePath || f.path.replace(this.projectPath + '/', '');
+      const parts = rel.split('/');
+      let node = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!node[parts[i]]) node[parts[i]] = {};
+        node = node[parts[i]];
+      }
+      node['__f_' + parts[parts.length - 1]] = f;
+    }
+
+    const renderNode = (node, container, depth = 0) => {
+      const entries = Object.entries(node).sort(([a], [b]) => {
+        const af = a.startsWith('__f_'), bf = b.startsWith('__f_');
+        if (af !== bf) return af ? 1 : -1;
+        return a.localeCompare(b);
+      });
+
+      for (const [key, val] of entries) {
+        if (key.startsWith('__f_')) {
+          const file = val;
+          const name = key.slice(4);
+          const item = h('div', {
+            className: 'code-file-item',
+            style: { paddingLeft: `${8 + depth * 14}px` },
+            onClick: () => this._openCodeFile(file.path || (this.projectPath + '/' + (file.relativePath || name))),
+          }, this._fileIcon(name), h('span', {}, name));
+          item.dataset.filePath = file.path || (this.projectPath + '/' + (file.relativePath || name));
+          container.appendChild(item);
+        } else {
+          // Folder
+          const folder = h('div', { className: 'code-folder' });
+          const header = h('div', {
+            className: 'code-folder-header',
+            style: { paddingLeft: `${8 + depth * 14}px` },
+          });
+          const arrow = h('span', { className: 'code-folder-arrow open' });
+          arrow.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          header.append(arrow, h('span', {}, key));
+
+          const children = h('div', { className: 'code-folder-children' });
+          renderNode(val, children, depth + 1);
+
+          header.addEventListener('click', () => {
+            const open = children.style.display !== 'none';
+            children.style.display = open ? 'none' : '';
+            arrow.classList.toggle('open', !open);
+          });
+
+          folder.append(header, children);
+          container.appendChild(folder);
+        }
+      }
+    };
+
+    renderNode(root, tree);
+  }
+
+  _fileIcon(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    const colors = { js: '#f7df1e', jsx: '#61dafb', ts: '#3178c6', tsx: '#61dafb', css: '#1572b6', html: '#e34f26', json: '#999', md: '#999' };
+    const color = colors[ext] || 'var(--text-tertiary)';
+    const el = h('span', { className: 'code-file-icon', style: { color } });
+    el.textContent = ext.toUpperCase().slice(0, 3);
+    return el;
+  }
+
+  async _openCodeFile(filePath) {
+    // Save previous file if modified
+    await this._saveCurrentCodeFile();
+
+    this._currentCodeFile = filePath;
+    this._codeModified = false;
+
+    try {
+      const data = await api.get(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+      this.codeTextarea.value = data.content || '';
+    } catch (e) {
+      this.codeTextarea.value = `// Error loading file: ${e.message}`;
+    }
+
+    // Update tab bar
+    const name = filePath.split('/').pop();
+    const existing = this._codeOpenTabs.find(t => t.path === filePath);
+    if (!existing) {
+      this._codeOpenTabs.push({ path: filePath, name, modified: false });
+    }
+    this._renderCodeTabs();
+
+    // Highlight active file in tree
+    this.el.querySelectorAll('.code-file-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.filePath === filePath);
+    });
+  }
+
+  _renderCodeTabs() {
+    this._codeTabBar.innerHTML = '';
+    for (const tab of this._codeOpenTabs) {
+      const isActive = tab.path === this._currentCodeFile;
+      const tabEl = h('div', {
+        className: `code-tab${isActive ? ' active' : ''}`,
+        onClick: () => this._openCodeFile(tab.path),
+      },
+        h('span', {}, (tab.modified ? '\u2022 ' : '') + tab.name),
+        h('button', {
+          className: 'code-tab-close',
+          onClick: (e) => {
+            e.stopPropagation();
+            this._closeCodeTab(tab.path);
+          },
+        }, '\u00d7'),
+      );
+      this._codeTabBar.appendChild(tabEl);
+    }
+  }
+
+  _updateCodeTab() {
+    const tab = this._codeOpenTabs.find(t => t.path === this._currentCodeFile);
+    if (tab) {
+      tab.modified = this._codeModified;
+      this._renderCodeTabs();
+    }
+  }
+
+  async _closeCodeTab(filePath) {
+    if (this._currentCodeFile === filePath && this._codeModified) {
+      await this._saveCurrentCodeFile();
+    }
+    this._codeOpenTabs = this._codeOpenTabs.filter(t => t.path !== filePath);
+    if (this._currentCodeFile === filePath) {
+      if (this._codeOpenTabs.length) {
+        this._openCodeFile(this._codeOpenTabs[this._codeOpenTabs.length - 1].path);
+      } else {
+        this._currentCodeFile = null;
+        this.codeTextarea.value = '';
+        this._renderCodeTabs();
+      }
+    } else {
+      this._renderCodeTabs();
+    }
+  }
+
+  async _saveCurrentCodeFile() {
+    if (!this._currentCodeFile || !this._codeModified) return;
+    try {
+      await api.post('/api/files/write', {
+        path: this._currentCodeFile,
+        content: this.codeTextarea.value,
+      });
+      this._codeModified = false;
+      this._updateCodeTab();
+    } catch (e) {
+      console.error('Failed to save file:', e);
+    }
+  }
+
   // Show changes (git diff)
   async showChanges() {
     try {
@@ -2430,6 +2688,7 @@ export class EditorView {
     this.shortcuts.register('escape', () => this.deselectAll(), 'Deselect');
     this.shortcuts.register('cmd+k', () => this.commandPalette?.open(), 'Command palette');
     this.shortcuts.register('cmd+i', () => this.chatInput?.focus(), 'Focus AI chat');
+    this.shortcuts.register('cmd+e', () => this.toggleCodeMode(), 'Toggle code editor');
 
     // Tool shortcuts (single keys, only when not typing)
     document.addEventListener('keydown', (e) => {
@@ -2453,6 +2712,7 @@ export class EditorView {
       { id: 'delete', label: 'Delete element', shortcut: 'delete', section: 'Edit', action: () => this.deleteSelected() },
       { id: 'duplicate', label: 'Duplicate element', shortcut: 'cmd+d', section: 'Edit', action: () => this.duplicateSelected() },
       { id: 'preview', label: 'Toggle preview', section: 'View', action: () => this.togglePreview() },
+      { id: 'code-mode', label: 'Toggle code editor', section: 'View', action: () => this.toggleCodeMode() },
       { id: 'changes', label: 'View changes', section: 'Git', action: () => this.showChanges() },
       { id: 'chat', label: 'Focus AI chat', shortcut: 'cmd+i', section: 'AI', action: () => this.chatInput?.focus() },
     ];

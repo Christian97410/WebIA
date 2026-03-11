@@ -5666,6 +5666,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-stronghold",
  "tauri-plugin-updater",
+ "tokio",
 ]
 
 [[package]]
