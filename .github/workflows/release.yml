@@ -52,8 +52,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Find the signature file
-          SIG_FILE=$(find src-tauri/target -name "*.tar.gz.sig" | head -1)
+          # Read the signature file
+          SIG_FILE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/WebIA.app.tar.gz.sig"
+          echo "Looking for signature at: $SIG_FILE"
+          ls -la "$SIG_FILE"
           SIGNATURE=$(cat "$SIG_FILE")
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
