@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Rust / Tauri build output
+target/
+src-tauri/target/
+
+# Sidecar binaries (built at compile time)
+src-tauri/sidecar/wia-server-*
+
+# WebIA sandbox directories
+.wia-sandbox/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Editor and OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Logs
+*.log
+npm-debug.log*
+
+# SEA build intermediates
+scripts/sea-config.json
+scripts/sea-prep.blob

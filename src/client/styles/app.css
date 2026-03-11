@@ -1,0 +1,111 @@
+#app {
+  width: 100%;
+  height: 100vh;
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+/* Dev server loading screen */
+.devserver-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  padding: 40px;
+}
+
+.devserver-loading__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.devserver-loading__icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.ds-bar {
+  transform-origin: center bottom;
+}
+
+.ds-bar--1 {
+  animation: ds-bar 1.2s ease-in-out -0.4s infinite;
+}
+
+.ds-bar--2 {
+  animation: ds-bar 1.2s ease-in-out -0.2s infinite;
+}
+
+.ds-bar--3 {
+  animation: ds-bar 1.2s ease-in-out 0s infinite;
+}
+
+@keyframes ds-bar {
+  0%, 100% { transform: scaleY(1); opacity: 0.35; }
+  50% { transform: scaleY(1.5); opacity: 1; }
+}
+
+.devserver-loading__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.devserver-loading__subtitle {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.devserver-loading__logs {
+  width: 100%;
+  max-width: 480px;
+  height: 120px;
+  overflow-y: auto;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.devserver-loading__logs:empty {
+  display: none;
+}
+
+.devserver-loading__status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  animation: ds-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ds-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.devserver-loading__cancel {
+  margin-top: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.devserver-loading__cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+  background: var(--bg-hover);
+}

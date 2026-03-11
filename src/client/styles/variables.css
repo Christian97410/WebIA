@@ -1,0 +1,46 @@
+:root {
+  /* Background */
+  --bg-app: #1a1a1a;
+  --bg-panel: #222222;
+  --bg-surface: #2a2a2a;
+  --bg-hover: #303030;
+  --bg-active: #383838;
+  --bg-canvas: #141414;
+  --bg-input: #1a1a1a;
+
+  /* Text */
+  --text-primary: #e8e8e8;
+  --text-secondary: #888888;
+  --text-tertiary: #555555;
+  --text-inverse: #1a1a1a;
+
+  /* Accent */
+  --accent: #4d9fff;
+  --accent-hover: #3d8fee;
+  --accent-subtle: rgba(77, 159, 255, 0.1);
+
+  /* Borders */
+  --border: #2e2e2e;
+  --border-subtle: #262626;
+
+  /* Selection */
+  --selection: #4d9fff;
+  --selection-bg: rgba(77, 159, 255, 0.08);
+
+  /* Danger */
+  --danger: #e55555;
+
+  /* Sizes */
+  --topbar-h: 40px;
+  --bottombar-h: 28px;
+  --panel-w: 240px;
+  --panel-right-w: 260px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* Transitions */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+}

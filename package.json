@@ -1,0 +1,54 @@
+{
+  "name": "wia",
+  "version": "0.1.0",
+  "description": "Visual editor for local repos with AI integration",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christian/wia"
+  },
+  "keywords": [
+    "visual-editor",
+    "web-ide",
+    "ai",
+    "code-editor",
+    "local-dev",
+    "html-editor"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "wia": "./bin/wia.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "node src/server/index.js",
+    "build": "vite build",
+    "start": "node src/server/index.js",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "sidecar:build": "bash scripts/build-sidecar.sh"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "express": "^4.21.0",
+    "parse5": "^7.2.1",
+    "postcss": "^8.4.49",
+    "simple-git": "^3.27.0",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-code-sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^6.0.0"
+  }
+}
