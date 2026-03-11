@@ -2,25 +2,8 @@ import { Router } from 'express';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
-import { execSync, spawn } from 'child_process';
-
-// GUI apps (Tauri) don't inherit the user's shell PATH.
-// Resolve it once at startup by asking the default shell.
-let _shellPath;
-function getShellPath() {
-  if (_shellPath) return _shellPath;
-  try {
-    const shell = process.env.SHELL || (process.platform === 'win32' ? 'cmd' : '/bin/sh');
-    const flag = process.platform === 'win32' ? '/c echo %PATH%' : '-ilc "echo \\$PATH"';
-    const resolved = execSync(`${shell} ${flag}`, { encoding: 'utf-8', timeout: 5000 }).trim();
-    if (resolved) {
-      _shellPath = resolved;
-      return _shellPath;
-    }
-  } catch { /* fall through */ }
-  _shellPath = process.env.PATH || '';
-  return _shellPath;
-}
+import { spawn } from 'child_process';
+import { getShellPath } from '../shell-path.js';
 
 const CONFIG_DIR = join(homedir(), '.wia');
 const CONFIG_FILE = join(CONFIG_DIR, 'projects.json');
