@@ -92,6 +92,19 @@ async fn check_claude_sdk(app: tauri::AppHandle) -> Result<ClaudeSDKStatus, Stri
     })
 }
 
+/// Signal that the user wants to install the pending update.
+/// The background task will pick this up and proceed with install + restart.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    match app.try_state::<UpdateReady>() {
+        Some(state) => {
+            state.trigger();
+            Ok(())
+        }
+        None => Err("No update available".to_string()),
+    }
+}
+
 /// Return the port the sidecar server is listening on.
 /// In dev mode this returns 3000 (the default dev port).
 #[tauri::command]
@@ -151,6 +164,21 @@ impl TokenStore {
 /// Holds the port the sidecar server is listening on.
 struct ServerPort(u16);
 
+/// Signals that the user wants to install the pending update.
+struct UpdateReady(std::sync::atomic::AtomicBool);
+
+impl UpdateReady {
+    fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+    fn trigger(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn is_triggered(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -172,6 +200,7 @@ fn main() {
             list_token_providers,
             check_claude_sdk,
             get_server_port,
+            install_update,
         ])
         // -- App setup: spawn the sidecar server --
         .setup(|app| {
@@ -219,16 +248,38 @@ fn main() {
             // Check for updates in the background (production only).
             #[cfg(not(debug_assertions))]
             {
+                let update_ready = UpdateReady::new();
+                app.manage(update_ready);
+
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    // Wait a few seconds before checking so the app loads first.
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
                     use tauri_plugin_updater::UpdaterExt;
-                    match handle.updater().unwrap().check().await {
-                        Ok(Some(update)) => {
-                            // In a real app, prompt the user before installing.
-                            let _ = update.download_and_install(|_, _| {}, || {}).await;
+                    let update = match handle.updater().unwrap().check().await {
+                        Ok(Some(update)) => update,
+                        _ => return,
+                    };
+
+                    let version = update.version.clone();
+                    // Notify the frontend that an update is available.
+                    let _ = handle.emit("update-available", serde_json::json!({
+                        "version": version
+                    }));
+
+                    // Wait for the user to click "Update".
+                    let state = handle.state::<UpdateReady>();
+                    loop {
+                        if state.is_triggered() {
+                            break;
                         }
-                        _ => {}
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                     }
+
+                    // Download, install, and restart.
+                    let _ = update.download_and_install(|_, _| {}, || {}).await;
+                    handle.restart();
                 });
             }
 

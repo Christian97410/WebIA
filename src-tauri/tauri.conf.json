@@ -66,9 +66,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://releases.wia.dev/update.json"
+        "https://github.com/Christian97410/WebIA/releases/latest/download/latest.json"
       ],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1MDE1NEIyRjgxREVBMApSV1NnM29FdlN4VlFERG5wTXNGTTl4ZGgzOTExTGEwRDBoNkdNc2U3alRkY2UrQmtzU3pFcFpSRQo="
     }
   }
 }

@@ -42,7 +42,11 @@ export class ProjectsView {
         h('div', { className: 'projects-open-field' },
           input,
           h('button', { className: 'btn-browse', onClick: () => this.browse(input) }, 'Browse')
-        )
+        ),
+        h('button', {
+          className: 'projects-new-btn',
+          onClick: () => this.showCreateModal(),
+        }, '+ New project')
       )
     );
 
@@ -68,6 +72,152 @@ export class ProjectsView {
       }
 
       this.el.appendChild(list);
+    }
+  }
+
+  showCreateModal() {
+    const templates = [
+      { id: 'html',       name: 'HTML / CSS',    desc: 'Blank static site',             icon: '◇' },
+      { id: 'vite-react', name: 'Vite + React',  desc: 'React with Vite & Tailwind',    icon: '⚡' },
+      { id: 'vite-vue',   name: 'Vite + Vue',    desc: 'Vue 3 with Vite',               icon: '⚡' },
+      { id: 'next',       name: 'Next.js',       desc: 'React fullstack framework',     icon: '▲' },
+      { id: 'astro',      name: 'Astro',         desc: 'Content-driven static sites',   icon: '✦' },
+    ];
+
+    const overlay = h('div', { className: 'browse-overlay' });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = h('div', { className: 'browse-modal create-modal' });
+
+    // Header
+    modal.appendChild(h('div', { className: 'browse-header' },
+      h('span', {}, 'New project'),
+      h('button', { className: 'browse-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    // Form
+    const form = h('div', { className: 'create-form' });
+
+    // Name
+    const nameInput = h('input', {
+      type: 'text',
+      className: 'create-input',
+      placeholder: 'my-project',
+      spellcheck: 'false',
+    });
+    form.appendChild(h('div', { className: 'create-field' },
+      h('label', { className: 'create-label' }, 'Name'),
+      nameInput,
+    ));
+
+    // Location
+    const locInput = h('input', {
+      type: 'text',
+      className: 'create-input',
+      placeholder: '~/Projects',
+      spellcheck: 'false',
+    });
+    // Default to home ~/Projects or ~/Desktop
+    locInput.value = '~/Projects';
+    const locBrowse = h('button', {
+      className: 'create-loc-browse',
+      onClick: () => this._pickFolder(locInput),
+    }, 'Browse');
+    form.appendChild(h('div', { className: 'create-field' },
+      h('label', { className: 'create-label' }, 'Location'),
+      h('div', { className: 'create-loc-row' }, locInput, locBrowse),
+    ));
+
+    // Template
+    let selectedTemplate = 'html';
+    const templateList = h('div', { className: 'create-templates' });
+    const templateEls = [];
+
+    for (const t of templates) {
+      const el = h('div', {
+        className: `create-template${t.id === selectedTemplate ? ' is-selected' : ''}`,
+        onClick: () => {
+          selectedTemplate = t.id;
+          templateEls.forEach((te, i) => {
+            te.classList.toggle('is-selected', templates[i].id === selectedTemplate);
+          });
+        },
+      },
+        h('div', { className: 'create-template__icon' }, t.icon),
+        h('div', { className: 'create-template__info' },
+          h('div', { className: 'create-template__name' }, t.name),
+          h('div', { className: 'create-template__desc' }, t.desc),
+        ),
+      );
+      templateEls.push(el);
+      templateList.appendChild(el);
+    }
+    form.appendChild(h('div', { className: 'create-field' },
+      h('label', { className: 'create-label' }, 'Template'),
+      templateList,
+    ));
+
+    modal.appendChild(form);
+
+    // Footer
+    const statusEl = h('div', { className: 'create-status' });
+    const createBtn = h('button', {
+      className: 'browse-btn browse-btn-open',
+      onClick: () => this._createProject({
+        name: nameInput.value.trim(),
+        location: locInput.value.trim(),
+        template: selectedTemplate,
+        statusEl,
+        createBtn,
+        overlay,
+      }),
+    }, 'Create');
+
+    modal.appendChild(h('div', { className: 'browse-footer' },
+      statusEl,
+      h('button', { className: 'browse-btn browse-btn-cancel', onClick: () => overlay.remove() }, 'Cancel'),
+      createBtn,
+    ));
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // Escape to close
+    const onKey = (e) => {
+      if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+    };
+    document.addEventListener('keydown', onKey);
+
+    nameInput.focus();
+  }
+
+  async _pickFolder(input) {
+    try {
+      const data = await api.get('/api/files/pick-folder');
+      if (data.folder) input.value = data.folder;
+    } catch {
+      // Fallback: user types manually
+    }
+  }
+
+  async _createProject({ name, location, template, statusEl, createBtn, overlay }) {
+    if (!name) { statusEl.textContent = 'Enter a project name'; return; }
+    if (!location) { statusEl.textContent = 'Enter a location'; return; }
+
+    createBtn.disabled = true;
+    createBtn.textContent = 'Creating...';
+    statusEl.textContent = '';
+
+    try {
+      const result = await api.post('/api/projects/create', { name, location, template });
+      overlay.remove();
+      this.onOpen(result.path);
+    } catch (err) {
+      statusEl.textContent = err.message || 'Creation failed';
+      createBtn.disabled = false;
+      createBtn.textContent = 'Create';
     }
   }
 

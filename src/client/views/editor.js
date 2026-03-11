@@ -27,6 +27,7 @@ export class EditorView {
     this.setupShortcuts();
     this.setupCommandPalette();
     this.loadGitBranch();
+    this.listenForUpdates();
   }
 
   render() {
@@ -287,13 +288,52 @@ export class EditorView {
     const panel = h('div', { className: 'chat-panel' });
     panel.style.height = `${this.chatHeight}px`;
 
-    this.chatMessages = h('div', { className: 'chat-messages' });
-    panel.appendChild(this.chatMessages);
+    // Claude logo SVG (from Bootstrap Icons)
+    this._claudeLogoSvg = (size = 24) => `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="#E87443"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871"/></svg>`;
 
+    // Auth state container — shown when not connected
+    this.chatAuthScreen = h('div', { className: 'chat-auth-screen' });
+    this.chatAuthScreen.innerHTML = `
+      <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
+      <div class="chat-auth-title">Claude</div>
+      <div class="chat-auth-text">Sign in to start editing with AI</div>
+      <button class="chat-auth-btn">Sign in with Claude</button>
+    `;
+    this.chatAuthScreen.querySelector('.chat-auth-btn').addEventListener('click', () => this.startClaudeAuth());
+    panel.appendChild(this.chatAuthScreen);
+
+    // Chat content (hidden until auth)
+    this.chatContent = h('div', { className: 'chat-content' });
+    this.chatContent.style.display = 'none';
+
+    // Header
+    const chatHeader = h('div', { className: 'chat-header' });
+    chatHeader.innerHTML = `
+      <div class="chat-header-left">
+        ${this._claudeLogoSvg(14)}
+        <span class="chat-header-title">Claude</span>
+      </div>
+      <div class="chat-header-right">
+        <span class="chat-status-dot"></span>
+      </div>
+    `;
+    this.chatContent.appendChild(chatHeader);
+
+    // Messages
+    this.chatMessages = h('div', { className: 'chat-messages' });
+    this.chatContent.appendChild(this.chatMessages);
+
+    // Context bar (shows selected element info)
+    this.chatContextBar = h('div', { className: 'chat-context-bar' });
+    this.chatContextBar.style.display = 'none';
+    this.chatContent.appendChild(this.chatContextBar);
+
+    // Input area
     const inputWrapper = h('div', { className: 'chat-input-wrapper' });
+
     this.chatInput = h('textarea', {
       className: 'chat-input',
-      placeholder: 'Ask AI...',
+      placeholder: 'Ask Claude...',
       rows: '1',
     });
 
@@ -302,6 +342,7 @@ export class EditorView {
         e.preventDefault();
         this.sendChatMessage(this.chatInput.value.trim());
         this.chatInput.value = '';
+        this.chatInput.style.height = 'auto';
       }
     });
 
@@ -311,9 +352,133 @@ export class EditorView {
       this.chatInput.style.height = Math.min(this.chatInput.scrollHeight, 120) + 'px';
     });
 
+    const sendBtn = h('button', { className: 'chat-send-btn', onClick: () => {
+      this.sendChatMessage(this.chatInput.value.trim());
+      this.chatInput.value = '';
+      this.chatInput.style.height = 'auto';
+    }});
+    sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
     inputWrapper.appendChild(this.chatInput);
-    panel.appendChild(inputWrapper);
+    inputWrapper.appendChild(sendBtn);
+
+    // Footer hint
+    const footer = h('div', { className: 'chat-footer' });
+    footer.innerHTML = '<span class="chat-footer-hint"><kbd>Enter</kbd> to send &middot; <kbd>Shift+Enter</kbd> for new line</span>';
+    inputWrapper.appendChild(footer);
+
+    this.chatContent.appendChild(inputWrapper);
+    panel.appendChild(this.chatContent);
+
+    // Check auth status
+    this.checkClaudeAuth();
+
     return panel;
+  }
+
+  async checkClaudeAuth() {
+    try {
+      const status = await api.get('/api/ai/providers');
+      const claudeSdk = status.providers?.find(p => p.id === 'claude-sdk');
+      const claudeApi = status.providers?.find(p => p.id === 'claude-api');
+      const isConnected = claudeSdk?.available || claudeApi?.available;
+
+      if (isConnected) {
+        this.setChatConnected(claudeSdk?.available ? 'Claude Code' : 'Claude API');
+      }
+    } catch {
+      // Server might not be ready yet, stay on auth screen
+    }
+  }
+
+  setChatConnected(providerName) {
+    this.chatAuthScreen.style.display = 'none';
+    this.chatContent.style.display = 'flex';
+    const dot = this.chatContent.querySelector('.chat-status-dot');
+    if (dot) dot.classList.add('connected');
+    const title = this.chatContent.querySelector('.chat-header-title');
+    if (title) title.textContent = providerName || 'Claude';
+
+    // Show welcome screen if no messages yet
+    if (this.chatMessages.children.length === 0) {
+      this.showChatWelcome();
+    }
+  }
+
+  showChatWelcome() {
+    const welcome = h('div', { className: 'chat-welcome' });
+    welcome.innerHTML = `
+      <div class="chat-welcome-logo">${this._claudeLogoSvg(28)}</div>
+      <div class="chat-welcome-title">What would you like to build?</div>
+      <div class="chat-welcome-hint">Describe what you want to change and Claude will edit your code.</div>
+    `;
+    this.chatMessages.appendChild(welcome);
+  }
+
+  async startClaudeAuth() {
+    const btn = this.chatAuthScreen.querySelector('.chat-auth-btn');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+
+    try {
+      // Try Tauri IPC first (desktop app)
+      if (window.__TAURI__) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const sdkStatus = await invoke('check_claude_sdk');
+
+        if (sdkStatus.has_credentials) {
+          this.setChatConnected('Claude Code');
+          return;
+        }
+
+        if (sdkStatus.cli_available) {
+          btn.textContent = 'Opening Claude login...';
+          // Launch claude auth login via shell
+          const { Command } = await import('@tauri-apps/plugin-shell');
+          const cmd = Command.create('claude', ['auth', 'login']);
+          await cmd.execute();
+          // Re-check after auth
+          await this.checkClaudeAuth();
+          return;
+        }
+      }
+
+      // Fallback: re-check server-side providers
+      await this.checkClaudeAuth();
+
+      if (this.chatContent.style.display === 'none') {
+        btn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          No provider found
+        `;
+        btn.disabled = false;
+        setTimeout(() => {
+          btn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Sign in with Claude
+          `;
+        }, 2000);
+      }
+    } catch (err) {
+      btn.textContent = 'Error — retry';
+      btn.disabled = false;
+    }
+  }
+
+  updateChatContext() {
+    if (!this.chatContextBar) return;
+    if (this.selectedElement) {
+      const tag = this.selectedElement.tagName?.toLowerCase() || '';
+      const cls = this.selectedElement.className ? `.${this.selectedElement.className.split(' ')[0]}` : '';
+      this.chatContextBar.style.display = 'flex';
+      this.chatContextBar.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M5.5 3L2 8l3.5 5M10.5 3L14 8l-3.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${tag}${cls}</span>`;
+    } else {
+      this.chatContextBar.style.display = 'none';
+    }
   }
 
   // Format computed value: round numbers, convert rgb to hex
@@ -1107,6 +1272,7 @@ export class EditorView {
     this.updateBreadcrumb(element);
     this.refreshRightPanel();
     this.highlightLayer(element);
+    this.updateChatContext();
   }
 
   showSelection() {
@@ -1456,6 +1622,10 @@ export class EditorView {
   async sendChatMessage(text) {
     if (!text) return;
 
+    // Clear welcome screen on first message
+    const welcome = this.chatMessages.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
     // Add user message
     const userMsg = h('div', { className: 'chat-message chat-message-user' }, text);
     this.chatMessages.appendChild(userMsg);
@@ -1484,8 +1654,9 @@ export class EditorView {
       } catch {}
     }
 
-    // Loading indicator
-    const loading = h('div', { className: 'chat-message chat-message-ai' }, 'Thinking...');
+    // Loading indicator — Claude style
+    const loading = h('div', { className: 'chat-message chat-message-ai chat-loading' });
+    loading.innerHTML = '<div class="chat-loader"><div class="chat-loader-dot"></div></div><span>Thinking...</span>';
     this.chatMessages.appendChild(loading);
 
     try {
@@ -2207,6 +2378,44 @@ export class EditorView {
     } catch {
       this.gitBranch.textContent = '';
     }
+  }
+
+  // Auto-update listener (Tauri only)
+  async listenForUpdates() {
+    if (!window.__TAURI__) return;
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      listen('update-available', (event) => {
+        const { version } = event.payload;
+        this.showUpdateBanner(version);
+      });
+    } catch {
+      // Not in Tauri or plugin not available.
+    }
+  }
+
+  showUpdateBanner(version) {
+    // Insert a subtle banner in the topbar-right area
+    const topbarRight = this.el.querySelector('.topbar-right');
+    if (!topbarRight || topbarRight.querySelector('.update-btn')) return;
+
+    const btn = h('button', {
+      className: 'update-btn',
+      onClick: async () => {
+        btn.textContent = 'Installing...';
+        btn.disabled = true;
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('install_update');
+        } catch (err) {
+          btn.textContent = `Update v${version}`;
+          btn.disabled = false;
+        }
+      },
+    }, `Update v${version}`);
+
+    topbarRight.prepend(h('div', { className: 'topbar-separator' }));
+    topbarRight.prepend(btn);
   }
 
   // Shortcuts
