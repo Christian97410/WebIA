@@ -20,6 +20,7 @@ export class EditorView {
     this.undoStack = [];
     this.redoStack = [];
     this.cssRulesCache = {};
+    this._currentTool = 'select';
 
     this.el = h('div', { className: 'editor-view' });
     this.render();
@@ -62,7 +63,14 @@ export class EditorView {
       { id: 'mobile', label: 'Mobile', width: '375px' },
     ];
 
-    // Tool mode buttons (select vs AI marquee)
+    // Tool mode buttons
+    this._toolNavigate = h('button', {
+      className: 'tool-btn',
+      onClick: () => this._setTool('navigate'),
+      title: 'Navigate mode (N)',
+    });
+    this._toolNavigate.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 3C4 2.4 4.4 2 5 2h6c.6 0 1 .4 1 1v10c0 .6-.4 1-1 1H5c-.6 0-1-.4-1-1V3z" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M6 5h4M6 7.5h4" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.5"/><path d="M8 10l-1.5 2h3L8 10z" fill="currentColor" opacity="0.6"/></svg>';
+
     this._toolSelect = h('button', {
       className: 'tool-btn active',
       onClick: () => this._setTool('select'),
@@ -98,6 +106,7 @@ export class EditorView {
         h('span', { className: 'topbar-project-name' }, this.projectPath.split('/').pop()),
         h('div', { className: 'topbar-separator' }),
         h('div', { className: 'tool-group' },
+          this._toolNavigate,
           this._toolSelect,
           this._toolAdd,
           this._toolMarquee,
@@ -1469,8 +1478,9 @@ export class EditorView {
     // Size iframe container to match breakpoint
     this.updateCanvasSize();
 
-    // Hover
+    // Hover (editor modes only)
     doc.addEventListener('mousemove', (e) => {
+      if (this._currentTool === 'navigate') return;
       const target = e.target;
       if (target === doc.body || target === doc.documentElement) {
         this.clearHover();
@@ -1479,8 +1489,13 @@ export class EditorView {
       this.showHover(target);
     });
 
-    // Click to select
+    // Click to select (editor modes) or navigate freely
     doc.addEventListener('click', (e) => {
+      if (this._currentTool === 'navigate') {
+        // Let clicks through — but track iframe navigation
+        this._onIframeNavigate();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       const target = e.target;
@@ -1489,8 +1504,9 @@ export class EditorView {
       }
     });
 
-    // Double-click for text editing
+    // Double-click for text editing (editor modes only)
     doc.addEventListener('dblclick', (e) => {
+      if (this._currentTool === 'navigate') return;
       e.preventDefault();
       const target = e.target;
       if (target.childNodes.length === 1 && target.childNodes[0].nodeType === 3) {
@@ -1500,6 +1516,24 @@ export class EditorView {
 
     // Build layers
     this.buildLayersTree(doc.body);
+  }
+
+  // Track navigation in the iframe (navigate mode)
+  _onIframeNavigate() {
+    // Re-setup interaction after iframe navigates
+    this.iframe.addEventListener('load', () => {
+      this.setupCanvasInteraction();
+      // Update URL bar for framework projects
+      if (this.devServer && this.iframe.contentWindow) {
+        try {
+          const loc = this.iframe.contentWindow.location;
+          const path = loc.pathname.replace(/^\/devpreview/, '') || '/';
+          this._devPath = path;
+          if (this._urlInput) this._urlInput.value = path;
+          if (this._routeSelect) this._routeSelect.value = path;
+        } catch { /* cross-origin */ }
+      }
+    }, { once: true });
   }
 
   // Selection
@@ -2232,12 +2266,27 @@ export class EditorView {
     this._currentTool = mode;
 
     // Update button states
+    this._toolNavigate.classList.toggle('active', mode === 'navigate');
     this._toolSelect.classList.toggle('active', mode === 'select');
     this._toolMarquee.classList.toggle('active', mode === 'marquee');
 
-    if (mode === 'marquee') {
+    if (mode === 'navigate') {
+      // Clear selection & hover, allow free navigation
+      this.selectedElement = null;
+      this.overlay.innerHTML = '';
+      this.clearHover();
+      this.iframeContainer.classList.add('navigate-mode');
+      // Deactivate marquee
+      if (this._marqueeActive) {
+        this._marqueeActive = false;
+        const overlay = this.el.querySelector('.canvas-overlay');
+        if (overlay) overlay.style.cursor = '';
+      }
+    } else if (mode === 'marquee') {
+      this.iframeContainer.classList.remove('navigate-mode');
       this.toggleAIMarquee();
     } else {
+      this.iframeContainer.classList.remove('navigate-mode');
       // Deactivate marquee if switching away
       if (this._marqueeActive) {
         this._marqueeActive = false;
@@ -3142,6 +3191,7 @@ export class EditorView {
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); this._setTool('navigate'); }
       if (e.key === 'v' || e.key === 'V') { e.preventDefault(); this._setTool('select'); }
       if (e.key === 'a' || e.key === 'A') { e.preventDefault(); this.toggleAddPanel(); }
       if (e.key === 'm' || e.key === 'M') { e.preventDefault(); this._setTool('marquee'); }
@@ -3159,6 +3209,8 @@ export class EditorView {
       { id: 'redo', label: 'Redo', shortcut: 'cmd+shift+z', section: 'Edit', action: () => this.redo() },
       { id: 'delete', label: 'Delete element', shortcut: 'delete', section: 'Edit', action: () => this.deleteSelected() },
       { id: 'duplicate', label: 'Duplicate element', shortcut: 'cmd+d', section: 'Edit', action: () => this.duplicateSelected() },
+      { id: 'navigate', label: 'Navigate mode', shortcut: 'N', section: 'Tools', action: () => this._setTool('navigate') },
+      { id: 'select-tool', label: 'Select tool', shortcut: 'V', section: 'Tools', action: () => this._setTool('select') },
       { id: 'preview', label: 'Toggle preview', section: 'View', action: () => this.togglePreview() },
       { id: 'code-mode', label: 'Toggle code editor', shortcut: 'cmd+e', section: 'View', action: () => this.toggleCodeMode() },
       { id: 'toggle-left', label: 'Toggle left panel', shortcut: 'cmd+b', section: 'View', action: () => this._togglePanel('left') },

@@ -47,3 +47,34 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target aarch64-apple-darwin
+
+      - name: Generate and upload updater JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the signature file
+          SIG_FILE=$(find src-tauri/target -name "*.tar.gz.sig" | head -1)
+          SIGNATURE=$(cat "$SIG_FILE")
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          URL="https://github.com/Christian97410/WebIA/releases/download/${TAG}/WebIA_aarch64.app.tar.gz"
+
+          cat > latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "WebIA ${TAG}",
+            "pub_date": "${DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIGNATURE}",
+                "url": "${URL}"
+              }
+            }
+          }
+          EOF
+
+          # Clean up indentation
+          python3 -c "import json,sys; d=json.load(open('latest.json')); json.dump(d,open('latest.json','w'),indent=2)"
+
+          gh release upload "${TAG}" latest.json --clobber
