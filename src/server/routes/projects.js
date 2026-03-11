@@ -4,6 +4,24 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { execSync, spawn } from 'child_process';
 
+// GUI apps (Tauri) don't inherit the user's shell PATH.
+// Resolve it once at startup by asking the default shell.
+let _shellPath;
+function getShellPath() {
+  if (_shellPath) return _shellPath;
+  try {
+    const shell = process.env.SHELL || (process.platform === 'win32' ? 'cmd' : '/bin/sh');
+    const flag = process.platform === 'win32' ? '/c echo %PATH%' : '-ilc "echo \\$PATH"';
+    const resolved = execSync(`${shell} ${flag}`, { encoding: 'utf-8', timeout: 5000 }).trim();
+    if (resolved) {
+      _shellPath = resolved;
+      return _shellPath;
+    }
+  } catch { /* fall through */ }
+  _shellPath = process.env.PATH || '';
+  return _shellPath;
+}
+
 const CONFIG_DIR = join(homedir(), '.wia');
 const CONFIG_FILE = join(CONFIG_DIR, 'projects.json');
 
@@ -124,6 +142,12 @@ p {
         return res.json({ path: projectPath });
       }
 
+      // Empty project — just a folder, AI does the rest
+      if (template === 'empty') {
+        await mkdir(projectPath, { recursive: true });
+        return res.json({ path: projectPath });
+      }
+
       // Framework templates — run scaffolding command
       const commands = {
         'vite-react': `npm create vite@latest ${name} -- --template react-ts`,
@@ -135,12 +159,13 @@ p {
       const cmd = commands[template];
       if (!cmd) return res.status(400).json({ error: `Unknown template: ${template}` });
 
-      // Run scaffolding in parent dir
+      // Run scaffolding in parent dir with enhanced PATH for macOS GUI apps
+      const enhancedEnv = { ...process.env, npm_config_yes: 'true', PATH: getShellPath() };
       await new Promise((resolve, reject) => {
         const child = spawn('sh', ['-c', cmd], {
           cwd: parentDir,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, npm_config_yes: 'true' },
+          env: enhancedEnv,
         });
 
         let stderr = '';
@@ -165,6 +190,7 @@ p {
             cwd: projectPath,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: true,
+            env: enhancedEnv,
           });
           child.on('close', (code) => {
             if (code === 0) resolve();

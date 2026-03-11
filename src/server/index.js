@@ -49,8 +49,12 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   app.use('/api/media', createMediaRouter());
 
   // Serve the target project's files (images, css, js, etc.)
+  // Track the last project dir for static preview (CSS/JS loaded without ?project= param)
+  let lastPreviewProject = projectPath;
+
   app.use('/preview', (req, res, next) => {
-    const projectDir = req.query.project || projectPath;
+    if (req.query.project) lastPreviewProject = req.query.project;
+    const projectDir = req.query.project || lastPreviewProject;
     if (!projectDir) return res.status(400).json({ error: 'No project path' });
     express.static(projectDir)(req, res, next);
   });

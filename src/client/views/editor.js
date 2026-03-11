@@ -324,16 +324,42 @@ export class EditorView {
     this.setupSplitter(splitter, center);
     center.appendChild(splitter);
 
-    // Chat
+    // Bottom panel (tabs: Chat | Terminal)
+    this.bottomPanel = h('div', { className: 'bottom-panel' });
+    this.bottomPanel.style.height = `${this.chatHeight}px`;
+
+    // Tab bar
+    this._bottomTabBar = h('div', { className: 'bottom-tabs' });
+    this._bottomActiveTab = 'chat';
+
+    const chatTabBtn = h('button', {
+      className: 'bottom-tab active',
+      onClick: () => this._switchBottomTab('chat'),
+    }, 'Chat');
+    const termTabBtn = h('button', {
+      className: 'bottom-tab',
+      onClick: () => this._switchBottomTab('terminal'),
+    }, 'Terminal');
+    this._bottomTabBtns = { chat: chatTabBtn, terminal: termTabBtn };
+    this._bottomTabBar.append(chatTabBtn, termTabBtn);
+    this.bottomPanel.appendChild(this._bottomTabBar);
+
+    // Chat panel
     this.chatPanel = this.renderChatPanel();
-    center.appendChild(this.chatPanel);
+    this.bottomPanel.appendChild(this.chatPanel);
+
+    // Terminal panel
+    this.terminalPanel = this.renderTerminalPanel();
+    this.terminalPanel.style.display = 'none';
+    this.bottomPanel.appendChild(this.terminalPanel);
+
+    center.appendChild(this.bottomPanel);
 
     return center;
   }
 
   renderChatPanel() {
     const panel = h('div', { className: 'chat-panel' });
-    panel.style.height = `${this.chatHeight}px`;
 
     // Claude logo SVG (from Bootstrap Icons)
     this._claudeLogoSvg = (size = 24) => `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="#E87443"><path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871"/></svg>`;
@@ -343,10 +369,42 @@ export class EditorView {
     this.chatAuthScreen.innerHTML = `
       <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
       <div class="chat-auth-title">Claude</div>
-      <div class="chat-auth-text">Sign in to start editing with AI</div>
-      <button class="chat-auth-btn">Sign in with Claude</button>
+      <div class="chat-auth-subtitle">Connect your API key to start editing with AI</div>
+      <div class="chat-auth-steps">
+        <div class="chat-auth-step">
+          <span class="chat-auth-step-num">1</span>
+          <span>Go to <a class="chat-auth-link" href="#" data-url="https://console.anthropic.com/settings/keys">console.anthropic.com</a></span>
+        </div>
+        <div class="chat-auth-step">
+          <span class="chat-auth-step-num">2</span>
+          <span>Create an API key and copy it</span>
+        </div>
+        <div class="chat-auth-step">
+          <span class="chat-auth-step-num">3</span>
+          <span>Paste it below</span>
+        </div>
+      </div>
+      <div class="chat-auth-input-row">
+        <input type="password" class="chat-auth-input" placeholder="sk-ant-..." spellcheck="false" autocomplete="off" />
+        <button class="chat-auth-btn">Connect</button>
+      </div>
+      <div class="chat-auth-error"></div>
     `;
-    this.chatAuthScreen.querySelector('.chat-auth-btn').addEventListener('click', () => this.startClaudeAuth());
+    // Open link in external browser
+    this.chatAuthScreen.querySelector('.chat-auth-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      const url = e.target.dataset.url;
+      if (window.__TAURI__) {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        open(url);
+      } else {
+        window.open(url, '_blank');
+      }
+    });
+    this.chatAuthScreen.querySelector('.chat-auth-btn').addEventListener('click', () => this.submitApiKey());
+    this.chatAuthScreen.querySelector('.chat-auth-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.submitApiKey();
+    });
     panel.appendChild(this.chatAuthScreen);
 
     // Chat content (hidden until auth)
@@ -425,16 +483,128 @@ export class EditorView {
 
   async checkClaudeAuth() {
     try {
-      const status = await api.get('/api/ai/providers');
-      const claudeSdk = status.providers?.find(p => p.id === 'claude-sdk');
-      const claudeApi = status.providers?.find(p => p.id === 'claude-api');
-      const isConnected = claudeSdk?.available || claudeApi?.available;
+      // Try to restore key from Tauri Stronghold first
+      if (window.__TAURI__) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const storedKey = await invoke('get_token', { provider: 'anthropic' });
+          if (storedKey) {
+            const result = await api.post('/api/ai/key', { key: storedKey });
+            if (result.valid) {
+              this.setChatConnected('Claude');
+              return;
+            }
+          }
+        } catch {}
+      }
 
-      if (isConnected) {
-        this.setChatConnected(claudeSdk?.available ? 'Claude Code' : 'Claude API');
+      // Check server-side providers
+      const status = await api.get('/api/ai/providers');
+      const claudeApi = status.providers?.find(p => p.id === 'claude-api');
+      if (claudeApi?.available) {
+        this.setChatConnected('Claude');
       }
     } catch {
       // Server might not be ready yet, stay on auth screen
+    }
+  }
+
+  // Terminal panel
+  renderTerminalPanel() {
+    const panel = h('div', { className: 'terminal-panel' });
+
+    this._termOutput = h('div', { className: 'term-output' });
+    panel.appendChild(this._termOutput);
+
+    const inputRow = h('div', { className: 'term-input-row' });
+    this._termPrompt = h('span', { className: 'term-prompt' }, '$ ');
+    this._termInput = h('input', {
+      className: 'term-input',
+      type: 'text',
+      spellcheck: 'false',
+      placeholder: 'Type a command...',
+    });
+
+    this._termHistory = [];
+    this._termHistoryIdx = -1;
+
+    this._termInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const cmd = this._termInput.value;
+        this._termInput.value = '';
+        if (cmd.trim()) {
+          this._termHistory.unshift(cmd);
+          this._termHistoryIdx = -1;
+        }
+        this._termWrite(`$ ${cmd}\n`, 'term-line-cmd');
+        this._termSendInput(cmd + '\n');
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (this._termHistoryIdx < this._termHistory.length - 1) {
+          this._termHistoryIdx++;
+          this._termInput.value = this._termHistory[this._termHistoryIdx];
+        }
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (this._termHistoryIdx > 0) {
+          this._termHistoryIdx--;
+          this._termInput.value = this._termHistory[this._termHistoryIdx];
+        } else {
+          this._termHistoryIdx = -1;
+          this._termInput.value = '';
+        }
+      }
+      // Ctrl+C
+      if (e.key === 'c' && e.ctrlKey) {
+        this._termSendInput('\x03');
+      }
+    });
+
+    inputRow.append(this._termPrompt, this._termInput);
+    panel.appendChild(inputRow);
+
+    return panel;
+  }
+
+  _termWrite(text, className) {
+    const line = h('div', { className: className || 'term-line' });
+    line.textContent = text;
+    this._termOutput.appendChild(line);
+    this._termOutput.scrollTop = this._termOutput.scrollHeight;
+  }
+
+  _termSendInput(data) {
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'terminal-input', data }));
+    }
+  }
+
+  _startTerminal() {
+    if (this._termStarted) return;
+    this._termStarted = true;
+
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({
+        type: 'terminal-start',
+        cwd: this.projectPath,
+      }));
+    }
+  }
+
+  _switchBottomTab(tab) {
+    this._bottomActiveTab = tab;
+    this.chatPanel.style.display = tab === 'chat' ? '' : 'none';
+    this.terminalPanel.style.display = tab === 'terminal' ? '' : 'none';
+
+    Object.entries(this._bottomTabBtns).forEach(([id, btn]) => {
+      btn.classList.toggle('active', id === tab);
+    });
+
+    if (tab === 'terminal') {
+      this._startTerminal();
+      this._termInput?.focus();
     }
   }
 
@@ -462,57 +632,45 @@ export class EditorView {
     this.chatMessages.appendChild(welcome);
   }
 
-  async startClaudeAuth() {
+  async submitApiKey() {
+    const input = this.chatAuthScreen.querySelector('.chat-auth-input');
     const btn = this.chatAuthScreen.querySelector('.chat-auth-btn');
+    const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
+    const key = input.value.trim();
+
+    if (!key) {
+      errorEl.textContent = 'Please enter your API key';
+      return;
+    }
+    if (!key.startsWith('sk-ant-')) {
+      errorEl.textContent = 'API key should start with sk-ant-...';
+      return;
+    }
+
+    errorEl.textContent = '';
     btn.disabled = true;
-    btn.textContent = 'Checking...';
+    btn.textContent = 'Verifying...';
 
     try {
-      // Try Tauri IPC first (desktop app)
-      if (window.__TAURI__) {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const sdkStatus = await invoke('check_claude_sdk');
-
-        if (sdkStatus.has_credentials) {
-          this.setChatConnected('Claude Code');
-          return;
+      const result = await api.post('/api/ai/key', { key });
+      if (result.valid) {
+        // Store in Tauri Stronghold if available
+        if (window.__TAURI__) {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('store_token', { provider: 'anthropic', token: key });
+          } catch {}
         }
-
-        if (sdkStatus.cli_available) {
-          btn.textContent = 'Opening Claude login...';
-          // Launch claude auth login via shell
-          const { Command } = await import('@tauri-apps/plugin-shell');
-          const cmd = Command.create('claude', ['auth', 'login']);
-          await cmd.execute();
-          // Re-check after auth
-          await this.checkClaudeAuth();
-          return;
-        }
-      }
-
-      // Fallback: re-check server-side providers
-      await this.checkClaudeAuth();
-
-      if (this.chatContent.style.display === 'none') {
-        btn.innerHTML = `
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          No provider found
-        `;
+        this.setChatConnected('Claude');
+      } else {
+        errorEl.textContent = result.error || 'Invalid API key';
         btn.disabled = false;
-        setTimeout(() => {
-          btn.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Sign in with Claude
-          `;
-        }, 2000);
+        btn.textContent = 'Connect';
       }
     } catch (err) {
-      btn.textContent = 'Error — retry';
+      errorEl.textContent = 'Connection error — try again';
       btn.disabled = false;
+      btn.textContent = 'Connect';
     }
   }
 
@@ -1134,10 +1292,67 @@ export class EditorView {
     this.breadcrumb = h('div', { className: 'breadcrumb' });
     this.gitBranch = h('div', { className: 'git-branch' });
 
+    // Panel toggle buttons (VS Code style)
+    const panelToggles = h('div', { className: 'bottombar-toggles' });
+
+    this._toggleLeftBtn = h('button', {
+      className: 'bottombar-toggle active',
+      title: 'Toggle left panel (Cmd+B)',
+      onClick: () => this._togglePanel('left'),
+    });
+    this._toggleLeftBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="2" x2="5.5" y2="14" stroke="currentColor" stroke-width="1.2"/></svg>';
+
+    this._toggleBottomBtn = h('button', {
+      className: 'bottombar-toggle active',
+      title: 'Toggle bottom panel (Cmd+J)',
+      onClick: () => this._togglePanel('bottom'),
+    });
+    this._toggleBottomBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="9.5" x2="15" y2="9.5" stroke="currentColor" stroke-width="1.2"/></svg>';
+
+    this._toggleRightBtn = h('button', {
+      className: 'bottombar-toggle active',
+      title: 'Toggle right panel',
+      onClick: () => this._togglePanel('right'),
+    });
+    this._toggleRightBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="10.5" y1="2" x2="10.5" y2="14" stroke="currentColor" stroke-width="1.2"/></svg>';
+
+    panelToggles.append(this._toggleLeftBtn, this._toggleBottomBtn, this._toggleRightBtn);
+
     return h('div', { className: 'bottombar' },
       this.breadcrumb,
+      h('div', { style: { flex: '1' } }),
       this.gitBranch,
+      panelToggles,
     );
+  }
+
+  _togglePanel(panel) {
+    if (panel === 'left') {
+      const el = this.el.querySelector('.panel-left');
+      this._leftHidden = !this._leftHidden;
+      el.style.display = this._leftHidden ? 'none' : '';
+      this._toggleLeftBtn.classList.toggle('active', !this._leftHidden);
+      this._updateGridColumns();
+    }
+    if (panel === 'right') {
+      const el = this.el.querySelector('.panel-right');
+      this._rightHidden = !this._rightHidden;
+      el.style.display = this._rightHidden ? 'none' : '';
+      this._toggleRightBtn.classList.toggle('active', !this._rightHidden);
+      this._updateGridColumns();
+    }
+    if (panel === 'bottom') {
+      this._bottomHidden = !this._bottomHidden;
+      this.bottomPanel.style.display = this._bottomHidden ? 'none' : '';
+      this.el.querySelector('.splitter-h').style.display = this._bottomHidden ? 'none' : '';
+      this._toggleBottomBtn.classList.toggle('active', !this._bottomHidden);
+    }
+  }
+
+  _updateGridColumns() {
+    const left = this._leftHidden ? '0' : 'var(--panel-w)';
+    const right = (this._rightHidden || this._codeMode) ? '0' : 'var(--panel-right-w)';
+    this.el.style.gridTemplateColumns = `${left} 1fr ${right}`;
   }
 
   // Load routes from the server and populate the dropdown
@@ -1645,7 +1860,7 @@ export class EditorView {
       const delta = startY - e.clientY;
       const newHeight = Math.max(48, Math.min(600, startHeight + delta));
       this.chatHeight = newHeight;
-      this.chatPanel.style.height = `${newHeight}px`;
+      this.bottomPanel.style.height = `${newHeight}px`;
     };
 
     const onMouseUp = () => {
@@ -2320,14 +2535,13 @@ export class EditorView {
     const right = this.el.querySelector('.panel-right');
     const topbar = this.el.querySelector('.topbar');
     const bottombar = this.el.querySelector('.bottombar');
-    const chat = this.chatPanel;
-
     this._previewMode = !this._previewMode;
 
     const display = this._previewMode ? 'none' : '';
     left.style.display = display;
     right.style.display = display;
-    chat.style.display = display;
+    this.bottomPanel.style.display = display;
+    this.el.querySelector('.splitter-h').style.display = display;
     bottombar.style.display = this._previewMode ? 'none' : 'flex';
 
     if (this._previewMode) {
@@ -2344,16 +2558,11 @@ export class EditorView {
 
     const right = this.el.querySelector('.panel-right');
     const panelLeft = this.el.querySelector('.panel-left');
-    const splitter = this.el.querySelector('.splitter-h');
-
     if (this._codeMode) {
-      // Save any pending changes before switching if coming back later
       this.canvasWrapper.style.display = 'none';
       this.codeEditorWrapper.style.display = 'flex';
       this.overlay.style.display = 'none';
       right.style.display = 'none';
-      if (splitter) splitter.style.display = 'none';
-      this.chatPanel.style.display = 'none';
       this.el.style.gridTemplateColumns = `var(--panel-w) 1fr 0`;
 
       // Swap left panel content to file tree
@@ -2370,8 +2579,6 @@ export class EditorView {
       this.codeEditorWrapper.style.display = 'none';
       this.overlay.style.display = '';
       right.style.display = '';
-      if (splitter) splitter.style.display = '';
-      this.chatPanel.style.display = '';
       this.el.style.gridTemplateColumns = `var(--panel-w) 1fr var(--panel-right-w)`;
 
       // Restore left panel by re-rendering it
@@ -2689,6 +2896,8 @@ export class EditorView {
     this.shortcuts.register('cmd+k', () => this.commandPalette?.open(), 'Command palette');
     this.shortcuts.register('cmd+i', () => this.chatInput?.focus(), 'Focus AI chat');
     this.shortcuts.register('cmd+e', () => this.toggleCodeMode(), 'Toggle code editor');
+    this.shortcuts.register('cmd+b', () => this._togglePanel('left'), 'Toggle left panel');
+    this.shortcuts.register('cmd+j', () => this._togglePanel('bottom'), 'Toggle bottom panel');
 
     // Tool shortcuts (single keys, only when not typing)
     document.addEventListener('keydown', (e) => {
@@ -2712,7 +2921,11 @@ export class EditorView {
       { id: 'delete', label: 'Delete element', shortcut: 'delete', section: 'Edit', action: () => this.deleteSelected() },
       { id: 'duplicate', label: 'Duplicate element', shortcut: 'cmd+d', section: 'Edit', action: () => this.duplicateSelected() },
       { id: 'preview', label: 'Toggle preview', section: 'View', action: () => this.togglePreview() },
-      { id: 'code-mode', label: 'Toggle code editor', section: 'View', action: () => this.toggleCodeMode() },
+      { id: 'code-mode', label: 'Toggle code editor', shortcut: 'cmd+e', section: 'View', action: () => this.toggleCodeMode() },
+      { id: 'toggle-left', label: 'Toggle left panel', shortcut: 'cmd+b', section: 'View', action: () => this._togglePanel('left') },
+      { id: 'toggle-bottom', label: 'Toggle bottom panel', shortcut: 'cmd+j', section: 'View', action: () => this._togglePanel('bottom') },
+      { id: 'toggle-right', label: 'Toggle right panel', section: 'View', action: () => this._togglePanel('right') },
+      { id: 'terminal', label: 'Open terminal', section: 'View', action: () => this._switchBottomTab('terminal') },
       { id: 'changes', label: 'View changes', section: 'Git', action: () => this.showChanges() },
       { id: 'chat', label: 'Focus AI chat', shortcut: 'cmd+i', section: 'AI', action: () => this.chatInput?.focus() },
     ];
@@ -2766,8 +2979,14 @@ export class EditorView {
     const connect = () => {
       const wsHost = api.baseUrl ? new URL(api.baseUrl).host : location.host;
       const ws = new WebSocket(`ws://${wsHost}`);
+      this.ws = ws;
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'watch', path: this.projectPath }));
+        // Re-start terminal if it was previously started
+        if (this._termStarted) {
+          this._termStarted = false;
+          this._startTerminal();
+        }
       };
       let reloadTimer = null;
       ws.onmessage = (e) => {
@@ -2783,8 +3002,20 @@ export class EditorView {
             this.iframe.contentWindow?.location.reload();
           }, 400);
         }
+        // Terminal output
+        if (msg.type === 'terminal-output') {
+          this._termWrite(msg.data);
+        }
+        if (msg.type === 'terminal-ready') {
+          this._termWrite(`Connected to ${msg.shell} in ${msg.cwd}\n`, 'term-line-info');
+        }
+        if (msg.type === 'terminal-exit') {
+          this._termWrite(`\nProcess exited (code ${msg.code})\n`, 'term-line-info');
+          this._termStarted = false;
+        }
       };
       ws.onclose = () => {
+        this.ws = null;
         // Reconnect after a short delay
         setTimeout(connect, 2000);
       };

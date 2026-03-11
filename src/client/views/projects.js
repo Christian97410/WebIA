@@ -77,6 +77,7 @@ export class ProjectsView {
 
   showCreateModal() {
     const templates = [
+      { id: 'empty',      name: 'Empty',         desc: 'Empty folder — let AI decide',  icon: '○' },
       { id: 'html',       name: 'HTML / CSS',    desc: 'Blank static site',             icon: '◇' },
       { id: 'vite-react', name: 'Vite + React',  desc: 'React with Vite & Tailwind',    icon: '⚡' },
       { id: 'vite-vue',   name: 'Vite + Vue',    desc: 'Vue 3 with Vite',               icon: '⚡' },
@@ -131,7 +132,7 @@ export class ProjectsView {
     ));
 
     // Template
-    let selectedTemplate = 'html';
+    let selectedTemplate = 'empty';
     const templateList = h('div', { className: 'create-templates' });
     const templateEls = [];
 

@@ -74,6 +74,42 @@ export async function createAIRouter() {
     }
   });
 
+  // ── POST /key ────────────────────────────────────────────────────────────
+  // Accept and validate an Anthropic API key from the frontend.
+  router.post('/key', async (req, res) => {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ valid: false, error: 'Key required' });
+
+    try {
+      // Validate by making a minimal API call
+      const check = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+
+      if (check.ok || check.status === 200) {
+        // Key is valid — store it in process.env for this session
+        process.env.ANTHROPIC_API_KEY = key;
+        return res.json({ valid: true });
+      }
+
+      const data = await check.json().catch(() => ({}));
+      const errMsg = data.error?.message || `Invalid key (HTTP ${check.status})`;
+      return res.json({ valid: false, error: errMsg });
+    } catch (err) {
+      return res.json({ valid: false, error: 'Could not reach Anthropic API' });
+    }
+  });
+
   // ── GET /status ───────────────────────────────────────────────────────────
   router.get('/status', (req, res) => {
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
