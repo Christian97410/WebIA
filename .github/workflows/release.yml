@@ -34,6 +34,14 @@ jobs:
       - name: Build sidecar (x86_64)
         run: ./scripts/build-sidecar.sh x86_64-apple-darwin
 
+      - name: Create universal sidecar binary
+        run: |
+          lipo -create \
+            src-tauri/sidecar/wia-server-aarch64-apple-darwin \
+            src-tauri/sidecar/wia-server-x86_64-apple-darwin \
+            -output src-tauri/sidecar/wia-server-universal-apple-darwin
+          chmod +x src-tauri/sidecar/wia-server-universal-apple-darwin
+
       - name: Build Tauri app (universal)
         uses: tauri-apps/tauri-action@v0
         env:
