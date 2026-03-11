@@ -137,7 +137,15 @@ export class EditorView {
           return this._codeToggleBtn;
         })(),
         h('button', { className: 'topbar-btn', onClick: () => this.togglePreview() }, '\u25B6'),
-        h('button', { className: 'topbar-btn', onClick: () => this.showChanges() }, 'Changes'),
+        (() => {
+          const btn = h('button', {
+            className: 'topbar-btn',
+            onClick: () => this.showGitPanel(),
+            title: 'Git',
+          });
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13 5a2 2 0 1 0-1-3.87V3a1 1 0 0 1-1 1H8a3 3 0 0 0-3 3v.17A2 2 0 1 0 6 9.83V7a1 1 0 0 1 1-1h3a3 3 0 0 0 3-3v-.87A2 2 0 0 0 13 5Z" stroke="currentColor" stroke-width="1.2"/></svg>';
+          return btn;
+        })(),
       ),
     );
   }
@@ -1290,7 +1298,7 @@ export class EditorView {
 
   renderBottombar() {
     this.breadcrumb = h('div', { className: 'breadcrumb' });
-    this.gitBranch = h('div', { className: 'git-branch' });
+    this.gitBranch = h('div', { className: 'git-branch', onClick: () => this.showGitPanel() });
 
     // Panel toggle buttons (VS Code style)
     const panelToggles = h('div', { className: 'bottombar-toggles' });
@@ -2756,82 +2764,313 @@ export class EditorView {
   }
 
   // Show changes (git diff)
-  async showChanges() {
+  async showGitPanel() {
+    const dir = this.projectPath;
+    const q = (p) => `${p}${p.includes('?') ? '&' : '?'}dir=${encodeURIComponent(dir)}`;
+
+    // Fetch status + auth in parallel
+    let status, authInfo;
     try {
-      const diff = await api.get(`/api/git/diff?dir=${encodeURIComponent(this.projectPath)}`);
-      const status = await api.get(`/api/git/status?dir=${encodeURIComponent(this.projectPath)}`);
-
-      const overlay = h('div', {
-        style: {
-          position: 'fixed', inset: '0', zIndex: '8000',
-          background: 'rgba(0,0,0,0.5)', display: 'flex',
-          justifyContent: 'center', alignItems: 'center',
-        },
-        onClick: (e) => { if (e.target === overlay) overlay.remove(); },
-      });
-
-      const modal = h('div', {
-        style: {
-          background: 'var(--bg-panel)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)', width: '640px', maxHeight: '80vh',
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        },
-      });
-
-      // Header
-      modal.appendChild(h('div', {
-        style: {
-          padding: '12px 16px', borderBottom: '1px solid var(--border)',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        },
-      },
-        h('span', { style: { fontWeight: '500', fontSize: '14px' } }, 'Changes'),
-        h('button', { onClick: () => overlay.remove(), style: { color: 'var(--text-tertiary)' } }, '\u2715')
-      ));
-
-      // Diff content
-      const diffContent = h('pre', {
-        style: {
-          padding: '12px 16px', overflow: 'auto', flex: '1',
-          fontSize: '12px', fontFamily: "'SF Mono', 'Fira Code', monospace",
-          lineHeight: '1.5', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap',
-        },
-      }, diff.diff || 'No changes');
-      modal.appendChild(diffContent);
-
-      // Commit section
-      const commitInput = h('input', {
-        className: 'style-input',
-        placeholder: 'Commit message...',
-        style: { margin: '0', borderRadius: '0' },
-      });
-
-      const commitSection = h('div', {
-        style: {
-          padding: '12px 16px', borderTop: '1px solid var(--border)',
-          display: 'flex', gap: '8px', alignItems: 'center',
-        },
-      },
-        commitInput,
-        h('button', {
-          style: {
-            background: 'var(--accent)', color: '#fff', padding: '6px 16px',
-            borderRadius: 'var(--radius-sm)', fontSize: '12px', fontWeight: '500',
-          },
-          onClick: async () => {
-            const msg = commitInput.value.trim();
-            if (!msg) return;
-            await api.post('/api/git/commit', { dir: this.projectPath, message: msg });
-            overlay.remove();
-          },
-        }, 'Commit')
-      );
-      modal.appendChild(commitSection);
-
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
+      [status, authInfo] = await Promise.all([
+        api.get(q('/api/git/status')),
+        api.get('/api/git/github/auth'),
+      ]);
     } catch (err) {
       console.error('Git error:', err);
+      return;
+    }
+
+    // Overlay
+    const overlay = h('div', { className: 'git-overlay' });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+    document.addEventListener('keydown', onKey);
+
+    const panel = h('div', { className: 'git-panel' });
+
+    // Header
+    panel.appendChild(h('div', { className: 'git-header' },
+      h('div', { className: 'git-header-left' },
+        h('span', { className: 'git-header-title' }, 'Git'),
+        status.isRepo ? h('span', { className: 'git-header-branch' }, status.branch || 'main') : null,
+      ),
+      h('button', { className: 'git-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    // Not a repo yet — init
+    if (!status.isRepo) {
+      const statusMsg = h('div', { className: 'git-status-msg' });
+      panel.appendChild(h('div', { className: 'git-publish' },
+        h('div', { className: 'git-publish-text' }, 'This project is not a git repository yet.'),
+        h('button', {
+          className: 'git-btn git-btn-primary',
+          onClick: async () => {
+            await api.post('/api/git/init', { dir });
+            overlay.remove();
+            this.showGitPanel();
+          },
+        }, 'Initialize repository'),
+        statusMsg,
+      ));
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      return;
+    }
+
+    // Tabs
+    const tabContent = h('div', { className: 'git-tab-content' });
+    let activeTab = 'changes';
+
+    const renderTab = async (tab) => {
+      activeTab = tab;
+      tabs.querySelectorAll('.git-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+      tabContent.innerHTML = '';
+
+      if (tab === 'changes') {
+        await this._renderGitChanges(tabContent, status, dir, overlay);
+      } else if (tab === 'history') {
+        await this._renderGitHistory(tabContent, dir);
+      } else if (tab === 'settings') {
+        await this._renderGitSettings(tabContent, dir, authInfo, status, overlay);
+      }
+    };
+
+    const tabs = h('div', { className: 'git-tabs' },
+      h('div', { className: 'git-tab active', dataset: { tab: 'changes' }, onClick: () => renderTab('changes') }, 'Changes'),
+      h('div', { className: 'git-tab', dataset: { tab: 'history' }, onClick: () => renderTab('history') }, 'History'),
+      h('div', { className: 'git-tab', dataset: { tab: 'settings' }, onClick: () => renderTab('settings') }, 'Settings'),
+    );
+    panel.appendChild(tabs);
+    panel.appendChild(tabContent);
+
+    // Sync bar (push/pull)
+    if (status.remote) {
+      const syncInfo = h('div', { className: 'git-sync-info' }, status.remote.replace('https://github.com/', '').replace('.git', ''));
+      const syncBar = h('div', { className: 'git-sync-bar' },
+        syncInfo,
+        h('div', { className: 'git-sync-badges' },
+          status.ahead ? h('span', { className: 'git-sync-badge' }, `${status.ahead}\u2191`) : null,
+          status.behind ? h('span', { className: 'git-sync-badge' }, `${status.behind}\u2193`) : null,
+        ),
+        h('button', {
+          className: 'git-btn git-btn-secondary',
+          onClick: async (e) => {
+            e.target.textContent = 'Pulling...';
+            e.target.disabled = true;
+            try { await api.post('/api/git/pull', { dir }); } catch (err) { syncInfo.textContent = err.message; }
+            overlay.remove(); this.showGitPanel();
+          },
+        }, 'Pull'),
+        h('button', {
+          className: 'git-btn git-btn-secondary',
+          onClick: async (e) => {
+            e.target.textContent = 'Pushing...';
+            e.target.disabled = true;
+            try { await api.post('/api/git/push', { dir }); } catch (err) { syncInfo.textContent = err.message; }
+            overlay.remove(); this.showGitPanel();
+          },
+        }, 'Push'),
+      );
+      panel.appendChild(syncBar);
+    }
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    // Render initial tab
+    renderTab('changes');
+  }
+
+  async _renderGitChanges(container, status, dir, overlay) {
+    const allChanges = [
+      ...status.modified.map(f => ({ name: f, status: 'M' })),
+      ...status.created.map(f => ({ name: f, status: 'A' })),
+      ...(status.not_added || []).map(f => ({ name: f, status: 'A' })),
+      ...status.deleted.map(f => ({ name: f, status: 'D' })),
+      ...status.conflicted.map(f => ({ name: f, status: 'U' })),
+    ];
+
+    if (allChanges.length === 0) {
+      container.appendChild(h('div', { className: 'git-empty' }, 'No changes'));
+    } else {
+      container.appendChild(h('div', { className: 'git-section-title' }, `${allChanges.length} changed file${allChanges.length > 1 ? 's' : ''}`));
+      const list = h('div', { className: 'git-file-list' });
+      for (const f of allChanges) {
+        list.appendChild(h('div', { className: 'git-file' },
+          h('span', { className: `git-file-status ${f.status.toLowerCase()}` }, f.status),
+          h('span', { className: 'git-file-name' }, f.name),
+        ));
+      }
+      container.appendChild(list);
+    }
+
+    // Commit section
+    const commitInput = h('textarea', {
+      className: 'git-commit-input',
+      placeholder: 'Commit message...',
+      rows: '2',
+    });
+
+    const statusMsg = h('div', { className: 'git-status-msg' });
+    const commitBtn = h('button', {
+      className: 'git-btn git-btn-primary',
+      onClick: async () => {
+        const msg = commitInput.value.trim();
+        if (!msg) { statusMsg.textContent = 'Enter a commit message'; return; }
+        commitBtn.disabled = true;
+        commitBtn.textContent = 'Committing...';
+        try {
+          const result = await api.post('/api/git/commit', { dir, message: msg });
+          statusMsg.textContent = `Committed ${result.commit}`;
+          // Refresh
+          setTimeout(() => { overlay.remove(); this.showGitPanel(); }, 600);
+        } catch (err) {
+          statusMsg.textContent = err.message;
+          commitBtn.disabled = false;
+          commitBtn.textContent = 'Commit';
+        }
+      },
+    }, 'Commit');
+
+    container.appendChild(h('div', { className: 'git-commit-section' },
+      commitInput,
+      h('div', { className: 'git-commit-actions' },
+        statusMsg,
+        commitBtn,
+      ),
+    ));
+
+    commitInput.focus();
+  }
+
+  async _renderGitHistory(container, dir) {
+    try {
+      const data = await api.get(`/api/git/log?dir=${encodeURIComponent(dir)}&n=30`);
+      if (!data.commits || data.commits.length === 0) {
+        container.appendChild(h('div', { className: 'git-empty' }, 'No commits yet'));
+        return;
+      }
+      for (const c of data.commits) {
+        const date = new Date(c.date);
+        const ago = this._timeAgo(date);
+        container.appendChild(h('div', { className: 'git-commit-item' },
+          h('span', { className: 'git-commit-hash' }, c.hash),
+          h('span', { className: 'git-commit-msg' }, c.message),
+          h('span', { className: 'git-commit-date' }, ago),
+        ));
+      }
+    } catch {
+      container.appendChild(h('div', { className: 'git-empty' }, 'Could not load history'));
+    }
+  }
+
+  _timeAgo(date) {
+    const s = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
+    return date.toLocaleDateString();
+  }
+
+  async _renderGitSettings(container, dir, authInfo, status, overlay) {
+    // GitHub Auth
+    container.appendChild(h('div', { className: 'git-section-title' }, 'GitHub'));
+
+    const authSection = h('div', { className: 'git-auth-section' });
+
+    if (authInfo.authenticated) {
+      authSection.appendChild(h('div', { className: 'git-auth-status' },
+        authInfo.avatar ? h('img', { className: 'git-auth-avatar', src: authInfo.avatar }) : null,
+        h('span', {}, 'Signed in as '),
+        h('span', { className: 'git-auth-user' }, authInfo.user),
+      ));
+      authSection.appendChild(h('button', {
+        className: 'git-btn git-btn-secondary',
+        onClick: async () => {
+          await api.del('/api/git/github/auth');
+          overlay.remove();
+          this.showGitPanel();
+        },
+      }, 'Sign out'));
+    } else {
+      const tokenInput = h('input', {
+        className: 'git-auth-input',
+        type: 'password',
+        placeholder: 'ghp_...',
+      });
+      const authStatus = h('div', { className: 'git-status-msg' });
+      authSection.appendChild(h('div', { className: 'git-auth-hint' }, 'Enter a GitHub Personal Access Token with repo scope.'));
+      authSection.appendChild(tokenInput);
+      authSection.appendChild(h('div', { className: 'git-commit-actions' },
+        authStatus,
+        h('button', {
+          className: 'git-btn git-btn-primary',
+          onClick: async () => {
+            const token = tokenInput.value.trim();
+            if (!token) return;
+            try {
+              const result = await api.post('/api/git/github/auth', { token });
+              if (result.authenticated) {
+                overlay.remove();
+                this.showGitPanel();
+              }
+            } catch (err) {
+              authStatus.textContent = err.message || 'Invalid token';
+            }
+          },
+        }, 'Connect'),
+      ));
+    }
+    container.appendChild(authSection);
+
+    // Publish to GitHub (if no remote)
+    if (!status.remote && authInfo.authenticated) {
+      container.appendChild(h('div', { className: 'git-section-title' }, 'Publish'));
+      const repoInput = h('input', {
+        className: 'git-repo-name-input',
+        placeholder: 'repository-name',
+        value: dir.split('/').pop(),
+      });
+      const privCheck = h('input', { type: 'checkbox', checked: true });
+      const pubStatus = h('div', { className: 'git-status-msg' });
+      container.appendChild(h('div', { className: 'git-auth-section' },
+        h('div', { className: 'git-auth-hint' }, 'Create a new GitHub repository and push your code.'),
+        repoInput,
+        h('div', { className: 'git-publish-row' },
+          h('label', {}, privCheck, ' Private'),
+          h('div', { style: { flex: '1' } }),
+          h('button', {
+            className: 'git-btn git-btn-primary',
+            onClick: async (e) => {
+              e.target.textContent = 'Publishing...';
+              e.target.disabled = true;
+              try {
+                const result = await api.post('/api/git/github/create-repo', {
+                  dir,
+                  name: repoInput.value.trim(),
+                  private: privCheck.checked,
+                });
+                pubStatus.textContent = 'Published!';
+                setTimeout(() => { overlay.remove(); this.showGitPanel(); this.loadGitBranch(); }, 800);
+              } catch (err) {
+                pubStatus.textContent = err.message;
+                e.target.textContent = 'Publish';
+                e.target.disabled = false;
+              }
+            },
+          }, 'Publish to GitHub'),
+        ),
+        pubStatus,
+      ));
+    }
+
+    // Remote URL
+    if (status.remote) {
+      container.appendChild(h('div', { className: 'git-section-title' }, 'Remote'));
+      container.appendChild(h('div', { className: 'git-auth-section' },
+        h('div', { style: { fontSize: '12px', fontFamily: "'SF Mono', 'Fira Code', monospace", color: 'var(--text-secondary)' } }, status.remote),
+      ));
     }
   }
 
@@ -2839,7 +3078,7 @@ export class EditorView {
   async loadGitBranch() {
     try {
       const data = await api.get(`/api/git/branch?dir=${encodeURIComponent(this.projectPath)}`);
-      this.gitBranch.textContent = data.current || '';
+      this.gitBranch.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" style="opacity:0.6"><path d="M11 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM5 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM5 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" fill="currentColor"/><path d="M5 4v8M11 4v2a2 2 0 0 1-2 2H7a2 2 0 0 0-2 2" stroke="currentColor" stroke-width="1.5"/></svg> ' + (data.current || '');
     } catch {
       this.gitBranch.textContent = '';
     }
@@ -2926,7 +3165,7 @@ export class EditorView {
       { id: 'toggle-bottom', label: 'Toggle bottom panel', shortcut: 'cmd+j', section: 'View', action: () => this._togglePanel('bottom') },
       { id: 'toggle-right', label: 'Toggle right panel', section: 'View', action: () => this._togglePanel('right') },
       { id: 'terminal', label: 'Open terminal', section: 'View', action: () => this._switchBottomTab('terminal') },
-      { id: 'changes', label: 'View changes', section: 'Git', action: () => this.showChanges() },
+      { id: 'git', label: 'Open Git panel', section: 'Git', action: () => this.showGitPanel() },
       { id: 'chat', label: 'Focus AI chat', shortcut: 'cmd+i', section: 'AI', action: () => this.chatInput?.focus() },
     ];
 

@@ -3,22 +3,9 @@ import { readFile, rm, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { spawn } from 'child_process';
-import { homedir } from 'os';
+import { getShellPath } from '../shell-path.js';
 
-// macOS GUI apps (Tauri) don't inherit shell PATH — add common node locations
-const ENHANCED_PATH = (() => {
-  const home = homedir();
-  const extra = [
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    join(home, '.nvm/versions/node', 'current', 'bin'),
-    join(home, '.volta/bin'),
-    join(home, '.fnm/aliases/default/bin'),
-    '/usr/local/share/npm/bin',
-  ];
-  const current = process.env.PATH || '';
-  return [...new Set([...extra, ...current.split(':')])].join(':');
-})();
+const ENHANCED_PATH = getShellPath();
 
 // Track running dev servers: projectPath → { process, port, framework }
 const servers = new Map();
