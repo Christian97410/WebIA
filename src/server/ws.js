@@ -2,19 +2,25 @@ import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
 
-// Try to load node-pty for proper terminal emulation
+// Try to load node-pty for proper terminal emulation (lazy loaded)
 let pty = null;
-try {
-  pty = await import('node-pty');
-} catch {
-  // node-pty not available — fall back to basic pipes
+let ptyChecked = false;
+function getPty() {
+  if (ptyChecked) return pty;
+  ptyChecked = true;
+  try {
+    pty = require('node-pty');
+  } catch {
+    // node-pty not available — fall back to basic pipes
+  }
+  return pty;
 }
 
 export function setupWebSocket(wss) {
   wss.on('connection', (ws) => {
     let projectWatcher = null;
     let terminalProcess = null;
-    let usePty = !!pty;
+    let usePty = !!getPty();
 
     const safeSend = (data) => {
       if (ws.readyState === 1) ws.send(JSON.stringify(data));
@@ -64,7 +70,7 @@ export function setupWebSocket(wss) {
         if (usePty) {
           // Real PTY — full terminal emulation (colors, cursor, resize)
           try {
-            terminalProcess = pty.spawn(shell, [], {
+            terminalProcess = getPty().spawn(shell, [], {
               name: 'xterm-256color',
               cols,
               rows,
