@@ -12,22 +12,28 @@ export class ProjectsView {
   async listenForUpdates() {
     try {
       const data = await api.get('/api/update-check');
-      if (data.available) this.showUpdateBanner(data.latestVersion, data.downloadUrl);
+      if (data.available) this.showUpdateBanner(data.latestVersion);
     } catch {}
   }
 
-  showUpdateBanner(version, downloadUrl) {
+  showUpdateBanner(version) {
     if (document.querySelector('.update-toast')) return;
+
+    const btn = h('button', {
+      className: 'update-toast__btn',
+      onClick: async () => {
+        btn.textContent = 'Installing…';
+        btn.disabled = true;
+        try { await api.post('/api/install-update'); } catch {}
+      },
+    }, 'Update');
 
     const toast = h('div', { className: 'update-toast' },
       h('div', { className: 'update-toast__text' },
-        'Update available: ',
+        'A new version is available: ',
         h('span', { className: 'update-toast__version' }, `v${version}`),
       ),
-      h('button', {
-        className: 'update-toast__btn',
-        onClick: () => { location.href = downloadUrl; },
-      }, 'Download'),
+      btn,
       h('button', {
         className: 'update-toast__close',
         onClick: () => toast.remove(),

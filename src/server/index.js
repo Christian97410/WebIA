@@ -202,6 +202,18 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
     }
   });
 
+  // Signal from frontend → Tauri Rust polls this to trigger download+install
+  let installRequested = false;
+
+  app.post('/api/install-update', (req, res) => {
+    installRequested = true;
+    res.json({ ok: true });
+  });
+
+  app.get('/api/install-update/status', (req, res) => {
+    res.json({ requested: installRequested });
+  });
+
   function compareVersions(a, b) {
     const pa = a.split('.').map(Number);
     const pb = b.split('.').map(Number);

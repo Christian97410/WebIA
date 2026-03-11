@@ -1,9 +1,5 @@
 import { Router } from 'express';
-import { readFile } from 'fs/promises';
 import { spawn } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
 import { shellEnv, resolveCmd } from '../shell-path.js';
 
 // Lazy-load the SDK route — falls back gracefully if not installed.
@@ -117,7 +113,7 @@ export async function createAIRouter() {
 
   // ── GET /setup/status ────────────────────────────────────────────────────
   // Detect Claude Code CLI + SDK + auth state for onboarding flow.
-  router.get('/setup/status', (req, res) => {
+  router.get('/setup/status', async (req, res) => {
     let cliInstalled = false;
     let cliPath = null;
     let authenticated = false;
@@ -128,12 +124,24 @@ export async function createAIRouter() {
       cliInstalled = cliPath !== 'claude'; // resolveCmd returns the name if not found
     } catch {}
 
-    // Check credentials
-    const credsPath = join(homedir(), '.claude', 'credentials.json');
-    if (existsSync(credsPath)) {
+    // Check auth via `claude auth status` (outputs JSON with loggedIn field)
+    if (cliInstalled) {
       try {
-        const creds = JSON.parse(readFileSync(credsPath, 'utf-8'));
-        authenticated = !!(creds && Object.keys(creds).length > 0);
+        const authResult = await new Promise((resolve) => {
+          const env = shellEnv();
+          const child = spawn(cliPath, ['auth', 'status'], {
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let out = '';
+          child.stdout.on('data', (d) => { out += d.toString(); });
+          child.stderr.on('data', (d) => { out += d.toString(); });
+          child.on('close', () => resolve(out));
+          child.on('error', () => resolve(''));
+          setTimeout(() => { child.kill(); resolve(''); }, 5000);
+        });
+        const parsed = JSON.parse(authResult);
+        authenticated = !!parsed.loggedIn;
       } catch {}
     }
 
