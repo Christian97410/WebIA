@@ -3,9 +3,11 @@ import { readFile, rm, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, relative } from 'path';
 import { spawn } from 'child_process';
-import { getShellPath } from '../shell-path.js';
+import { getShellPath, resolveCmd } from '../shell-path.js';
 
 const ENHANCED_PATH = getShellPath();
+const NPX = resolveCmd('npx');
+const NPM = resolveCmd('npm');
 
 // Track running dev servers: projectPath → { process, port, framework }
 const servers = new Map();
@@ -76,7 +78,7 @@ function installDeps(dir, entry) {
   entry.logs += '[WebIA] Installing dependencies...\n';
 
   return new Promise((resolve, reject) => {
-    const child = spawn('npm', ['install'], {
+    const child = spawn(NPM, ['install'], {
       cwd: dir,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
@@ -107,28 +109,28 @@ async function startDevServer(info, port) {
     case 'next':
       // Remove stale lock file that blocks startup
       await rm(join(dir, '.next', 'dev', 'lock'), { force: true }).catch(() => {});
-      cmd = 'npx';
+      cmd = NPX;
       args = ['next', 'dev', '-p', String(port)];
       break;
     case 'vite':
-      cmd = 'npx';
+      cmd = NPX;
       args = ['vite', '--port', String(port), '--strictPort'];
       break;
     case 'cra':
-      cmd = 'npx';
+      cmd = NPX;
       args = ['react-scripts', 'start'];
       break;
     case 'remix':
-      cmd = 'npx';
+      cmd = NPX;
       args = ['remix', 'dev', '--port', String(port)];
       break;
     case 'astro':
-      cmd = 'npx';
+      cmd = NPX;
       args = ['astro', 'dev', '--port', String(port)];
       break;
     default:
       // Generic: use npm run dev with PORT env
-      cmd = 'npm';
+      cmd = NPM;
       args = ['run', 'dev'];
       break;
   }
@@ -237,6 +239,9 @@ async function scanNextRoutes(appDir) {
   return routes
     .map(({ _fromDir, ...r }) => r)
     .sort((a, b) => {
+      // "/" always first
+      if (a.path === '/') return -1;
+      if (b.path === '/') return 1;
       // Static routes first, then dynamic
       if (a.isDynamic !== b.isDynamic) return a.isDynamic ? 1 : -1;
       return a.path.localeCompare(b.path);

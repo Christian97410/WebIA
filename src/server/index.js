@@ -38,6 +38,19 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   const wss = new WebSocketServer({ server });
 
   app.use(express.json({ limit: '5mb' }));
+
+  // When a framework dev server is active, proxy iframe requests BEFORE
+  // express.static so the root "/" serves the project page, not WebIA's index.html.
+  // Sec-Fetch-Dest: iframe identifies the initial <iframe src="..."> load.
+  app.use((req, res, next) => {
+    if (!devProxyPort) return next();
+    const sfd = req.headers['sec-fetch-dest'];
+    if (sfd !== 'iframe') return next();
+    if (req.path.startsWith('/api/') || req.path.startsWith('/preview/')) return next();
+    console.log(`[iframe-proxy] ${req.method} ${req.path} sec-fetch-dest=${sfd} → port ${devProxyPort}`);
+    proxyToDevServer(req, res, req.originalUrl);
+  });
+
   app.use(express.static(clientPath));
 
   app.use('/api/files', createFileRouter());
@@ -61,6 +74,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   // Proxy to framework dev server
   let devProxyPort = null;
+  let blockRedirects = false;
 
   function proxyToDevServer(req, res, targetPath) {
     const targetPort = req.query.port ? parseInt(req.query.port, 10) : devProxyPort;
@@ -86,14 +100,27 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
       delete headers['x-frame-options'];
       delete headers['content-security-policy'];
 
-      // Rewrite redirect locations to go through /devpreview/
+      // Handle redirects
       if (headers.location && (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400)) {
-        let loc = headers.location;
-        // Absolute URL → extract path
-        try { loc = new URL(loc).pathname; } catch {}
-        // Rewrite to go through our proxy
-        if (loc.startsWith('/') && !loc.startsWith('/devpreview/')) {
-          headers.location = '/devpreview' + loc;
+        if (blockRedirects) {
+          // Block the redirect: consume the response and serve the target page instead
+          proxyRes.resume();
+          let loc = headers.location;
+          try { loc = new URL(loc).pathname + (new URL(loc).search || ''); } catch {}
+          // Re-fetch the redirect target directly from the dev server
+          const retryReq = httpRequest({
+            hostname: 'localhost', port: targetPort, path: loc, method: 'GET', headers: fwdHeaders,
+          }, (retryRes) => {
+            const retryHeaders = { ...retryRes.headers };
+            delete retryHeaders['x-frame-options'];
+            delete retryHeaders['content-security-policy'];
+            // If it's another redirect, just follow it (max 1 hop)
+            res.writeHead(retryRes.statusCode, retryHeaders);
+            retryRes.pipe(res);
+          });
+          retryReq.on('error', () => res.status(502).json({ error: 'Dev server not responding' }));
+          retryReq.end();
+          return;
         }
       }
 
@@ -111,6 +138,11 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
     res.json({ ok: true, port: devProxyPort });
   });
 
+  app.get('/devpreview/block-redirects', (req, res) => {
+    blockRedirects = req.query.enabled === 'true';
+    res.json({ ok: true, blockRedirects });
+  });
+
   app.use('/devpreview', (req, res) => {
     const targetPath = req.originalUrl.replace(/^\/devpreview/, '') || '/';
     proxyToDevServer(req, res, targetPath);
@@ -122,6 +154,14 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   });
 
   app.use('/__nextjs', (req, res) => {
+    proxyToDevServer(req, res, req.originalUrl);
+  });
+
+  // Catch-all: proxy unmatched routes to the dev server when active.
+  // Handles client-side navigation (e.g. /dashboard) and server redirects.
+  app.use((req, res, next) => {
+    if (!devProxyPort) return next();
+    if (req.path.startsWith('/api/') || req.path.startsWith('/preview/')) return next();
     proxyToDevServer(req, res, req.originalUrl);
   });
 
@@ -161,9 +201,11 @@ if (_isDirectRun) {
   let port = parseInt(process.env.PORT || '3000', 10);
   let projectPath = null;
 
-  for (const arg of process.argv.slice(1)) {
+  // Skip argv[0] (node) and argv[1] (script path) — real args start at index 2.
+  // For SEA binaries, argv[1] is already the first real arg.
+  const argsStart = _isSEA ? 1 : 2;
+  for (const arg of process.argv.slice(argsStart)) {
     if (arg.startsWith('--port=')) port = parseInt(arg.split('=')[1], 10);
-    else if (arg.startsWith('--port') && false) { /* handled by = format */ }
     else if (!arg.startsWith('-')) projectPath = arg;
   }
 

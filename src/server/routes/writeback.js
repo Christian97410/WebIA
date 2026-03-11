@@ -15,6 +15,13 @@ export function createWritebackRouter() {
       }
 
       const content = await readFile(filePath, 'utf-8');
+
+      // Never rewrite framework entry-point CSS files (Tailwind, PostCSS layers)
+      // PostCSS can corrupt @tailwind directives, destroying all utility styles
+      if (content.includes('@tailwind')) {
+        return res.status(400).json({ error: 'Cannot write to Tailwind entry file. Use a separate CSS file.' });
+      }
+
       const updated = updateCSSProperty(content, filePath, selector, prop, value, mediaQuery || null);
 
       // Validate the result before writing — never corrupt the file

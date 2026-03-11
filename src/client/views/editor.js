@@ -148,11 +148,11 @@ export class EditorView {
         h('button', { className: 'topbar-btn', onClick: () => this.togglePreview() }, '\u25B6'),
         (() => {
           const btn = h('button', {
-            className: 'topbar-btn',
+            className: 'topbar-btn topbar-btn--git',
             onClick: () => this.showGitPanel(),
             title: 'Git',
           });
-          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13 5a2 2 0 1 0-1-3.87V3a1 1 0 0 1-1 1H8a3 3 0 0 0-3 3v.17A2 2 0 1 0 6 9.83V7a1 1 0 0 1 1-1h3a3 3 0 0 0 3-3v-.87A2 2 0 0 0 13 5Z" stroke="currentColor" stroke-width="1.2"/></svg>';
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" fill="currentColor"/></svg><span>Commit</span>';
           return btn;
         })(),
       ),
@@ -247,7 +247,12 @@ export class EditorView {
     // Canvas
     this.canvasWrapper = h('div', { className: 'canvas-wrapper' });
     this.iframeContainer = h('div', { className: 'canvas-iframe-container' });
-    this.iframe = h('iframe', { sandbox: 'allow-same-origin allow-scripts' });
+    // Framework projects load cross-origin (direct dev server port) —
+    // no sandbox needed, the cross-origin boundary provides isolation.
+    // Static projects use sandbox for safety since they're same-origin.
+    this.iframe = this.devServer
+      ? h('iframe', {})
+      : h('iframe', { sandbox: 'allow-same-origin allow-scripts' });
     this.overlay = h('div', { className: 'canvas-overlay' });
 
     this.iframeContainer.appendChild(this.iframe);
@@ -287,7 +292,21 @@ export class EditorView {
       });
       urlRefresh.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M13.5 8a5.5 5.5 0 11-1.5-3.8M12 1v3.5H8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-      urlBar.append(this._routeSelect, this._urlInput, urlRefresh);
+      // Block redirects toggle
+      this._blockRedirects = false;
+      const redirectBtn = h('button', {
+        className: 'canvas-urlbar__btn',
+        title: 'Block redirects (useful when the app auto-redirects away from the page you want to edit)',
+        onClick: () => {
+          this._blockRedirects = !this._blockRedirects;
+          redirectBtn.classList.toggle('active', this._blockRedirects);
+          fetch(`${api.baseUrl}/devpreview/block-redirects?enabled=${this._blockRedirects}`);
+          if (this._blockRedirects) this._navigateDevPreview(this._devPath);
+        },
+      });
+      redirectBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 2l12 12M8 1a7 7 0 100 14A7 7 0 008 1z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+
+      urlBar.append(this._routeSelect, this._urlInput, redirectBtn, urlRefresh);
       this.canvasWrapper.appendChild(urlBar);
 
       // Fetch routes in background
@@ -383,44 +402,7 @@ export class EditorView {
 
     // Auth state container — shown when not connected
     this.chatAuthScreen = h('div', { className: 'chat-auth-screen' });
-    this.chatAuthScreen.innerHTML = `
-      <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
-      <div class="chat-auth-title">Claude</div>
-      <div class="chat-auth-subtitle">Connect your API key to start editing with AI</div>
-      <div class="chat-auth-steps">
-        <div class="chat-auth-step">
-          <span class="chat-auth-step-num">1</span>
-          <span>Go to <a class="chat-auth-link" href="#" data-url="https://console.anthropic.com/settings/keys">console.anthropic.com</a></span>
-        </div>
-        <div class="chat-auth-step">
-          <span class="chat-auth-step-num">2</span>
-          <span>Create an API key and copy it</span>
-        </div>
-        <div class="chat-auth-step">
-          <span class="chat-auth-step-num">3</span>
-          <span>Paste it below</span>
-        </div>
-      </div>
-      <div class="chat-auth-input-row">
-        <input type="password" class="chat-auth-input" placeholder="sk-ant-..." spellcheck="false" autocomplete="off" />
-        <button class="chat-auth-btn">Connect</button>
-      </div>
-      <div class="chat-auth-error"></div>
-    `;
-    // Open link in external browser
-    this.chatAuthScreen.querySelector('.chat-auth-link').addEventListener('click', async (e) => {
-      e.preventDefault();
-      const url = e.target.dataset.url;
-      if (window.__TAURI__) {
-        window.__TAURI__.shell.open(url);
-      } else {
-        window.open(url, '_blank');
-      }
-    });
-    this.chatAuthScreen.querySelector('.chat-auth-btn').addEventListener('click', () => this.submitApiKey());
-    this.chatAuthScreen.querySelector('.chat-auth-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.submitApiKey();
-    });
+    this._renderAuthScreen();
     panel.appendChild(this.chatAuthScreen);
 
     // Chat content (hidden until auth)
@@ -499,7 +481,18 @@ export class EditorView {
 
   async checkClaudeAuth() {
     try {
-      // Try to restore key from Tauri Stronghold first
+      // 1. Check SDK setup status first
+      const setup = await api.get('/api/ai/setup/status');
+      if (setup.ready) {
+        this.setChatConnected('Claude Code');
+        return;
+      }
+      if (setup.sdkAvailable) {
+        this.setChatConnected('Claude Code');
+        return;
+      }
+
+      // 2. Try to restore key from Tauri Stronghold
       if (window.__TAURI__) {
         try {
           const storedKey = await window.__TAURI__.core.invoke('get_token', { provider: 'anthropic' });
@@ -513,12 +506,16 @@ export class EditorView {
         } catch {}
       }
 
-      // Check server-side providers
+      // 3. Check server-side providers (raw API key already set as env var)
       const status = await api.get('/api/ai/providers');
       const claudeApi = status.providers?.find(p => p.id === 'claude-api');
       if (claudeApi?.available) {
         this.setChatConnected('Claude');
+        return;
       }
+
+      // 4. Show appropriate auth screen based on setup state
+      this._renderAuthScreen(setup);
     } catch {
       // Server might not be ready yet, stay on auth screen
     }
@@ -647,29 +644,188 @@ export class EditorView {
     this.chatMessages.appendChild(welcome);
   }
 
-  async submitApiKey() {
-    const input = this.chatAuthScreen.querySelector('.chat-auth-input');
-    const btn = this.chatAuthScreen.querySelector('.chat-auth-btn');
+  _renderAuthScreen(setup) {
+    this.chatAuthScreen.innerHTML = '';
+
+    // If CLI not installed → show install flow
+    if (!setup || !setup.cliInstalled) {
+      this.chatAuthScreen.innerHTML = `
+        <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
+        <div class="chat-auth-title">Claude Code</div>
+        <div class="chat-auth-subtitle">Install Claude Code to use AI editing</div>
+        <div class="chat-auth-steps">
+          <div class="chat-auth-step">
+            <span class="chat-auth-step-num">1</span>
+            <span>Click install to set up Claude Code CLI</span>
+          </div>
+          <div class="chat-auth-step">
+            <span class="chat-auth-step-num">2</span>
+            <span>Sign in with your Anthropic account</span>
+          </div>
+          <div class="chat-auth-step">
+            <span class="chat-auth-step-num">3</span>
+            <span>Start editing with AI</span>
+          </div>
+        </div>
+        <button class="chat-auth-btn chat-setup-install-btn">Install Claude Code</button>
+        <div class="chat-auth-error"></div>
+        <div class="chat-auth-divider"><span>or</span></div>
+        <div class="chat-auth-subtitle" style="font-size: 11px; opacity: .6">Use an API key instead</div>
+        <div class="chat-auth-input-row">
+          <input type="password" class="chat-auth-input" placeholder="sk-ant-..." spellcheck="false" autocomplete="off" />
+          <button class="chat-auth-btn chat-auth-key-btn">Connect</button>
+        </div>
+      `;
+      this.chatAuthScreen.querySelector('.chat-setup-install-btn').addEventListener('click', () => this._installClaudeCode());
+      const keyBtn = this.chatAuthScreen.querySelector('.chat-auth-key-btn');
+      const keyInput = this.chatAuthScreen.querySelector('.chat-auth-input');
+      keyBtn.addEventListener('click', () => this._submitApiKey());
+      keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this._submitApiKey(); });
+      return;
+    }
+
+    // CLI installed but not authenticated → show auth flow
+    if (!setup.authenticated) {
+      this.chatAuthScreen.innerHTML = `
+        <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
+        <div class="chat-auth-title">Claude Code</div>
+        <div class="chat-auth-subtitle">Sign in to your Anthropic account</div>
+        <div class="chat-auth-steps">
+          <div class="chat-auth-step">
+            <span class="chat-auth-step-num chat-auth-step-done">&#10003;</span>
+            <span>Claude Code installed</span>
+          </div>
+          <div class="chat-auth-step">
+            <span class="chat-auth-step-num">2</span>
+            <span>Click below to sign in</span>
+          </div>
+        </div>
+        <button class="chat-auth-btn chat-setup-auth-btn">Sign in with Anthropic</button>
+        <div class="chat-auth-error"></div>
+      `;
+      this.chatAuthScreen.querySelector('.chat-setup-auth-btn').addEventListener('click', () => this._authClaude());
+      return;
+    }
+
+    // Fallback: API key screen
+    this.chatAuthScreen.innerHTML = `
+      <div class="chat-auth-logo">${this._claudeLogoSvg(32)}</div>
+      <div class="chat-auth-title">Claude</div>
+      <div class="chat-auth-subtitle">Connect your API key to start editing with AI</div>
+      <div class="chat-auth-input-row">
+        <input type="password" class="chat-auth-input" placeholder="sk-ant-..." spellcheck="false" autocomplete="off" />
+        <button class="chat-auth-btn">Connect</button>
+      </div>
+      <div class="chat-auth-error"></div>
+    `;
+    this.chatAuthScreen.querySelector('.chat-auth-btn').addEventListener('click', () => this._submitApiKey());
+    this.chatAuthScreen.querySelector('.chat-auth-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._submitApiKey();
+    });
+  }
+
+  async _installClaudeCode() {
+    const btn = this.chatAuthScreen.querySelector('.chat-setup-install-btn');
     const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
-    const key = input.value.trim();
+    btn.disabled = true;
+    btn.textContent = 'Installing...';
+    errorEl.textContent = '';
+
+    try {
+      const result = await api.post('/api/ai/setup/install', {});
+      if (result.success) {
+        // Re-check setup state and update screen
+        const setup = await api.get('/api/ai/setup/status');
+        if (setup.sdkAvailable || setup.ready) {
+          this.setChatConnected('Claude Code');
+        } else {
+          this._renderAuthScreen(setup);
+        }
+      } else {
+        errorEl.textContent = result.error || 'Installation failed';
+        btn.disabled = false;
+        btn.textContent = 'Install Claude Code';
+      }
+    } catch (err) {
+      errorEl.textContent = 'Installation failed — try again';
+      btn.disabled = false;
+      btn.textContent = 'Install Claude Code';
+    }
+  }
+
+  async _authClaude() {
+    const btn = this.chatAuthScreen.querySelector('.chat-setup-auth-btn');
+    const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
+    btn.disabled = true;
+    btn.textContent = 'Opening browser...';
+    errorEl.textContent = '';
+
+    try {
+      const result = await api.post('/api/ai/setup/auth', {});
+      if (result.authUrl) {
+        // Open auth URL in browser
+        if (window.__TAURI__) {
+          window.__TAURI__.shell.open(result.authUrl);
+        } else {
+          window.open(result.authUrl, '_blank');
+        }
+        btn.textContent = 'Waiting for sign in...';
+        errorEl.textContent = '';
+        // Poll for auth completion
+        this._pollAuthStatus();
+      } else if (result.sdkAvailable) {
+        this.setChatConnected('Claude Code');
+      } else {
+        errorEl.textContent = 'Could not start authentication';
+        btn.disabled = false;
+        btn.textContent = 'Sign in with Anthropic';
+      }
+    } catch (err) {
+      errorEl.textContent = 'Authentication failed — try again';
+      btn.disabled = false;
+      btn.textContent = 'Sign in with Anthropic';
+    }
+  }
+
+  async _pollAuthStatus() {
+    // Poll every 3s for up to 2 minutes
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const setup = await api.get('/api/ai/setup/status');
+        if (setup.authenticated || setup.ready) {
+          this.setChatConnected('Claude Code');
+          return;
+        }
+      } catch {}
+    }
+    const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
+    if (errorEl) errorEl.textContent = 'Sign in timed out — try again';
+    const btn = this.chatAuthScreen.querySelector('.chat-setup-auth-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign in with Anthropic'; }
+  }
+
+  async _submitApiKey() {
+    const input = this.chatAuthScreen.querySelector('.chat-auth-input');
+    const btn = input?.parentElement?.querySelector('.chat-auth-btn, .chat-auth-key-btn');
+    const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
+    const key = input?.value?.trim();
 
     if (!key) {
-      errorEl.textContent = 'Please enter your API key';
+      if (errorEl) errorEl.textContent = 'Please enter your API key';
       return;
     }
     if (!key.startsWith('sk-ant-')) {
-      errorEl.textContent = 'API key should start with sk-ant-...';
+      if (errorEl) errorEl.textContent = 'API key should start with sk-ant-...';
       return;
     }
 
-    errorEl.textContent = '';
-    btn.disabled = true;
-    btn.textContent = 'Verifying...';
+    if (errorEl) errorEl.textContent = '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
 
     try {
       const result = await api.post('/api/ai/key', { key });
       if (result.valid) {
-        // Store in Tauri Stronghold if available
         if (window.__TAURI__) {
           try {
             await window.__TAURI__.core.invoke('store_token', { provider: 'anthropic', token: key });
@@ -677,14 +833,12 @@ export class EditorView {
         }
         this.setChatConnected('Claude');
       } else {
-        errorEl.textContent = result.error || 'Invalid API key';
-        btn.disabled = false;
-        btn.textContent = 'Connect';
+        if (errorEl) errorEl.textContent = result.error || 'Invalid API key';
+        if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
       }
     } catch (err) {
-      errorEl.textContent = 'Connection error — try again';
-      btn.disabled = false;
-      btn.textContent = 'Connect';
+      if (errorEl) errorEl.textContent = 'Connection error — try again';
+      if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
     }
   }
 
@@ -1406,19 +1560,31 @@ export class EditorView {
         parent.appendChild(opt);
       };
 
-      // Ungrouped first
-      for (const r of ungrouped) addOption(r, this._routeSelect);
+      // Always add "/" first at the top level if it exists (regardless of group)
+      const rootRoute = routes.find(r => r.path === '/');
+      if (rootRoute) {
+        addOption(rootRoute, this._routeSelect);
+      }
 
-      // Then each group as optgroup
+      // Ungrouped (skip "/" since already added)
+      for (const r of ungrouped) {
+        if (r.path === '/') continue;
+        addOption(r, this._routeSelect);
+      }
+
+      // Then each group as optgroup (skip "/" since already added at top)
       for (const [name, groupRoutes] of Object.entries(groups)) {
+        const filtered = groupRoutes.filter(r => r.path !== '/');
+        if (filtered.length === 0) continue;
         const optgroup = document.createElement('optgroup');
         optgroup.label = name;
-        for (const r of groupRoutes) addOption(r, optgroup);
+        for (const r of filtered) addOption(r, optgroup);
         this._routeSelect.appendChild(optgroup);
       }
 
-      // Select "/" if available
+      // Select "/" if available, ensuring _devPath is also set
       this._routeSelect.value = '/';
+      if (rootRoute) this._devPath = '/';
     } catch (err) {
       console.warn('Failed to load routes:', err);
     }
@@ -1431,8 +1597,12 @@ export class EditorView {
     if (this._urlInput) this._urlInput.value = path;
     if (this._routeSelect) this._routeSelect.value = path;
 
+    // Load through WebIA server (same-origin) so iframe.contentDocument
+    // is accessible for editor interactions (hover, select, edit).
+    // The catch-all proxy forwards to the dev server while keeping
+    // the real path, so client-side routing works correctly.
     const setAndLoad = () => {
-      this.iframe.src = `${api.baseUrl}/devpreview` + path;
+      this.iframe.src = api.baseUrl + path;
       this.iframe.onload = () => this.setupCanvasInteraction();
     };
 
@@ -1469,11 +1639,11 @@ export class EditorView {
   }
 
   setupCanvasInteraction() {
+    // Always size the canvas, even for cross-origin iframes
+    this.updateCanvasSize();
+
     const doc = this.iframe.contentDocument;
     if (!doc) return;
-
-    // Size iframe container to match breakpoint
-    this.updateCanvasSize();
 
     // Hover (editor modes only)
     doc.addEventListener('mousemove', (e) => {
@@ -1506,10 +1676,21 @@ export class EditorView {
       if (this._currentTool === 'navigate') return;
       e.preventDefault();
       const target = e.target;
-      if (target.childNodes.length === 1 && target.childNodes[0].nodeType === 3) {
+      if (target === doc.body || target === doc.documentElement) return;
+      // Allow editing on elements that contain text content (leaf-level elements)
+      const isTextEditable = target.children.length === 0 ||
+        ['SPAN', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'A', 'LI', 'LABEL', 'BUTTON', 'TD', 'TH', 'FIGCAPTION', 'BLOCKQUOTE', 'STRONG', 'EM', 'B', 'I', 'SMALL', 'MARK', 'DEL', 'INS', 'SUB', 'SUP'].includes(target.tagName);
+      if (isTextEditable && target.textContent.trim().length > 0) {
         this.startTextEdit(target);
       }
     });
+
+    // Update selection/hover overlays on scroll so they track the element
+    doc.addEventListener('scroll', () => {
+      if (this._currentTool === 'navigate') return;
+      if (this.selectedElement) this.showSelection();
+      this.clearHover();
+    }, { passive: true });
 
     // Build layers
     this.buildLayersTree(doc.body);
@@ -1789,11 +1970,13 @@ export class EditorView {
     this.showSelection();
 
     this.pushUndo({
-      undo: () => { this.selectedElement.style[prop] = oldValue; this.writebackStyle(prop, oldValue); },
-      redo: () => { this.selectedElement.style[prop] = value; this.writebackStyle(prop, value); },
+      undo: () => { this.selectedElement.style[prop] = oldValue; this.writebackStyle(prop, oldValue); if (prop === 'display') this.refreshRightPanel(); },
+      redo: () => { this.selectedElement.style[prop] = value; this.writebackStyle(prop, value); if (prop === 'display') this.refreshRightPanel(); },
     });
 
     this.writebackStyle(prop, value);
+
+    if (prop === 'display') this.refreshRightPanel();
   }
 
   refreshRightPanel() {
@@ -1907,13 +2090,16 @@ export class EditorView {
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (this.iframe) this.iframe.style.pointerEvents = '';
     };
 
     splitter.addEventListener('mousedown', (e) => {
+      e.preventDefault();
       startY = e.clientY;
       startHeight = this.chatHeight;
       document.body.style.cursor = 'row-resize';
       document.body.style.userSelect = 'none';
+      if (this.iframe) this.iframe.style.pointerEvents = 'none';
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     });
@@ -2043,38 +2229,146 @@ export class EditorView {
     if (this._writebackBroken) return;
 
     const element = this.selectedElement;
-    const classes = (element.className || '').split(/\s+/).filter(Boolean);
-    const tag = element.tagName.toLowerCase();
-
-    const selector = classes.length > 0 ? `.${classes[0]}` : tag;
-
-    const cssFile = this.files.find(f => f.type === 'css');
-    if (!cssFile) return;
-
     const cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
 
     let mediaQuery = null;
     if (this.breakpoint === 'tablet') mediaQuery = '(max-width: 768px)';
     if (this.breakpoint === 'mobile') mediaQuery = '(max-width: 375px)';
 
+    // 1. Try CSSOM: find the exact rule + file that styles this element
+    const source = this._resolveStyleSource(element, cssProp);
+
+    let filePath, selector;
+
+    if (source) {
+      filePath = source.filePath;
+      selector = source.selector;
+    } else {
+      // 2. Fallback: use basic selector + first safe CSS file
+      const classes = (element.className || '').split(/\s+/).filter(Boolean);
+      selector = classes.length > 0 ? `.${classes[0]}` : element.tagName.toLowerCase();
+      const cssFile = this._getWritebackCSSFile();
+      if (!cssFile) return;
+      filePath = cssFile.path;
+    }
+
     try {
       await api.post('/api/writeback/css', {
-        filePath: cssFile.path,
+        filePath,
         selector,
         prop: cssProp,
         value,
         mediaQuery,
       });
-      // Reset error state on success
       this._writebackBroken = false;
     } catch (err) {
       console.error('Writeback failed:', err);
-      // If CSS file is corrupt, stop spamming the server
-      if (err.message?.includes('parse error') || err.message?.includes('Unexpected')) {
+      if (err.message?.includes('parse error') || err.message?.includes('Unexpected') || err.message?.includes('Tailwind')) {
         this._writebackBroken = true;
-        console.warn('CSS file appears corrupt — writeback paused. Fix the CSS file to resume.');
+        console.warn('CSS writeback paused:', err.message);
       }
     }
+  }
+
+  // Resolve which CSS file + selector defines a property for this element (like DevTools)
+  _resolveStyleSource(element, cssProp) {
+    const doc = this.iframe?.contentDocument;
+    if (!doc) return null;
+
+    let bestMatch = null;
+
+    try {
+      for (const sheet of doc.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch { continue; } // skip cross-origin sheets
+
+        // Resolve sheet href to a project file path
+        const filePath = this._resolveSheetPath(sheet);
+        if (!filePath) continue; // skip inline <style> or unresolvable sheets
+
+        for (const rule of rules) {
+          if (rule.type !== 1 /* CSSRule.STYLE_RULE */) continue;
+          try {
+            if (!element.matches(rule.selectorText)) continue;
+          } catch { continue; } // invalid selector
+
+          // This rule matches the element — check if it defines the property
+          // Always keep the last match (highest specificity in cascade order)
+          if (rule.style.getPropertyValue(cssProp)) {
+            bestMatch = { filePath, selector: rule.selectorText };
+          }
+        }
+      }
+
+      // Even if the property isn't set, find ANY matching rule in a writable file
+      // so we can add the property to the right selector
+      if (!bestMatch) {
+        for (const sheet of doc.styleSheets) {
+          let rules;
+          try { rules = sheet.cssRules; } catch { continue; }
+          const filePath = this._resolveSheetPath(sheet);
+          if (!filePath) continue;
+
+          for (const rule of rules) {
+            if (rule.type !== 1) continue;
+            try {
+              if (!element.matches(rule.selectorText)) continue;
+            } catch { continue; }
+            bestMatch = { filePath, selector: rule.selectorText };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Style source resolution failed:', e);
+    }
+
+    return bestMatch;
+  }
+
+  // Map a CSSStyleSheet to a project file path
+  _resolveSheetPath(sheet) {
+    if (!sheet.href) return null; // inline <style> — can't write back
+
+    try {
+      const url = new URL(sheet.href);
+      const pathname = url.pathname;
+
+      // Static project: /preview/style.css → match relative path
+      if (pathname.startsWith('/preview/')) {
+        const rel = pathname.replace('/preview/', '');
+        const file = this.files.find(f => f.relativePath === rel);
+        return file?.path || null;
+      }
+
+      // Framework project: /src/App.css or similar → match against file list
+      const file = this.files.find(f =>
+        pathname.endsWith(f.relativePath) || pathname.endsWith('/' + f.relativePath)
+      );
+      return file?.path || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Find a safe CSS file for writeback (skip framework entry files)
+  _getWritebackCSSFile() {
+    if (this._writebackCSSFile) return this._writebackCSSFile;
+
+    const cssFiles = this.files.filter(f => f.type === 'css');
+    if (cssFiles.length === 0) return null;
+
+    // For static projects (no devServer), use the first CSS file as before
+    if (!this.devServer) {
+      this._writebackCSSFile = cssFiles[0];
+      return this._writebackCSSFile;
+    }
+
+    // For framework projects, skip files with @tailwind / @layer / heavy @import usage
+    // These are framework entry points that PostCSS shouldn't rewrite
+    const unsafe = /index\.css$|globals?\.css$|tailwind\.css$/i;
+    const safe = cssFiles.find(f => !unsafe.test(f.path));
+    this._writebackCSSFile = safe || null;
+    return this._writebackCSSFile;
   }
 
   // Undo/Redo
@@ -2814,6 +3108,28 @@ export class EditorView {
     const dir = this.projectPath;
     const q = (p) => `${p}${p.includes('?') ? '&' : '?'}dir=${encodeURIComponent(dir)}`;
 
+    // Show overlay immediately with loading state
+    const overlay = h('div', { className: 'git-overlay' });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+    document.addEventListener('keydown', onKey);
+
+    const panel = h('div', { className: 'git-panel' });
+
+    // Show loading header immediately
+    const headerLeft = h('div', { className: 'git-header-left' },
+      h('span', { className: 'git-header-title' }, 'Git'),
+    );
+    panel.appendChild(h('div', { className: 'git-header' },
+      headerLeft,
+      h('button', { className: 'git-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    const loadingEl = h('div', { className: 'git-loading' }, 'Loading...');
+    panel.appendChild(loadingEl);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
     // Fetch status + auth in parallel
     let status, authInfo;
     try {
@@ -2822,26 +3138,16 @@ export class EditorView {
         api.get('/api/git/github/auth'),
       ]);
     } catch (err) {
+      loadingEl.textContent = 'Failed to load git status';
       console.error('Git error:', err);
       return;
     }
 
-    // Overlay
-    const overlay = h('div', { className: 'git-overlay' });
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
-    document.addEventListener('keydown', onKey);
-
-    const panel = h('div', { className: 'git-panel' });
-
-    // Header
-    panel.appendChild(h('div', { className: 'git-header' },
-      h('div', { className: 'git-header-left' },
-        h('span', { className: 'git-header-title' }, 'Git'),
-        status.isRepo ? h('span', { className: 'git-header-branch' }, status.branch || 'main') : null,
-      ),
-      h('button', { className: 'git-close', onClick: () => overlay.remove() }, '\u2715'),
-    ));
+    // Remove loading, update header with branch
+    loadingEl.remove();
+    if (status.isRepo && status.branch) {
+      headerLeft.appendChild(h('span', { className: 'git-header-branch' }, status.branch));
+    }
 
     // Not a repo yet — init
     if (!status.isRepo) {
@@ -2858,8 +3164,6 @@ export class EditorView {
         }, 'Initialize repository'),
         statusMsg,
       ));
-      overlay.appendChild(panel);
-      document.body.appendChild(overlay);
       return;
     }
 
@@ -2919,9 +3223,6 @@ export class EditorView {
       );
       panel.appendChild(syncBar);
     }
-
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
 
     // Render initial tab
     renderTab('changes');

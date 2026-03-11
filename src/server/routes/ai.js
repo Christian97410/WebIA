@@ -1,5 +1,10 @@
 import { Router } from 'express';
 import { readFile } from 'fs/promises';
+import { spawn } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { shellEnv, resolveCmd } from '../shell-path.js';
 
 // Lazy-load the SDK route — falls back gracefully if not installed.
 let sdkRouter = null;
@@ -108,6 +113,122 @@ export async function createAIRouter() {
     } catch (err) {
       return res.json({ valid: false, error: 'Could not reach Anthropic API' });
     }
+  });
+
+  // ── GET /setup/status ────────────────────────────────────────────────────
+  // Detect Claude Code CLI + SDK + auth state for onboarding flow.
+  router.get('/setup/status', (req, res) => {
+    let cliInstalled = false;
+    let cliPath = null;
+    let authenticated = false;
+
+    // Check if `claude` CLI is in PATH
+    try {
+      cliPath = resolveCmd('claude');
+      cliInstalled = cliPath !== 'claude'; // resolveCmd returns the name if not found
+    } catch {}
+
+    // Check credentials
+    const credsPath = join(homedir(), '.claude', 'credentials.json');
+    if (existsSync(credsPath)) {
+      try {
+        const creds = JSON.parse(readFileSync(credsPath, 'utf-8'));
+        authenticated = !!(creds && Object.keys(creds).length > 0);
+      } catch {}
+    }
+
+    res.json({
+      cliInstalled,
+      cliPath,
+      sdkAvailable,
+      authenticated,
+      ready: sdkAvailable && authenticated,
+    });
+  });
+
+  // ── POST /setup/install ─────────────────────────────────────────────────
+  // Install Claude Code CLI globally via npm.
+  router.post('/setup/install', (req, res) => {
+    const env = shellEnv();
+    const child = spawn('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => stdout += d);
+    child.stderr.on('data', d => stderr += d);
+
+    child.on('close', async (code) => {
+      if (code === 0) {
+        // Re-init SDK now that CLI is installed
+        sdkInitDone = false;
+        sdkAvailable = false;
+        sdkRouter = null;
+        await initSDK();
+        res.json({ success: true, sdkAvailable });
+      } else {
+        res.status(500).json({ success: false, error: stderr || 'npm install failed' });
+      }
+    });
+
+    child.on('error', (err) => {
+      res.status(500).json({ success: false, error: err.message });
+    });
+  });
+
+  // ── POST /setup/auth ────────────────────────────────────────────────────
+  // Start Claude auth login. Returns the auth URL for the user to visit.
+  router.post('/setup/auth', (req, res) => {
+    const env = shellEnv();
+    const claude = resolveCmd('claude');
+    const child = spawn(claude, ['auth', 'login', '--no-browser'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    let responded = false;
+
+    const onData = (data) => {
+      output += data.toString();
+      // Claude auth outputs a URL the user needs to visit
+      const urlMatch = output.match(/(https:\/\/[^\s]+)/);
+      if (urlMatch && !responded) {
+        responded = true;
+        res.json({ success: true, authUrl: urlMatch[1] });
+      }
+    };
+
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+
+    child.on('close', async () => {
+      // Re-check SDK availability after auth
+      sdkInitDone = false;
+      sdkAvailable = false;
+      sdkRouter = null;
+      await initSDK();
+      if (!responded) {
+        res.json({ success: true, message: 'Auth completed', sdkAvailable });
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!responded) {
+        responded = true;
+        res.status(500).json({ success: false, error: err.message });
+      }
+    });
+
+    // Timeout after 60s
+    setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        child.kill();
+        res.status(504).json({ success: false, error: 'Auth timed out' });
+      }
+    }, 60000);
   });
 
   // ── GET /status ───────────────────────────────────────────────────────────

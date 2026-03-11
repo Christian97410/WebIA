@@ -12,7 +12,7 @@ class App {
   }
 
   async init() {
-    // Check if launched with a project path
+    // Check if launched with a project path (CLI / Tauri)
     try {
       const serverState = await api.get('/api/state');
       if (serverState.currentProject) {
@@ -22,11 +22,27 @@ class App {
     } catch (err) {
       console.error('Failed to load server state:', err);
     }
+
+    // Restore last session from browser (survives page reload)
+    const lastProject = sessionStorage.getItem('wia:project');
+    console.log('[wia] session restore:', lastProject);
+    if (lastProject) {
+      try {
+        await this.openProject(lastProject);
+        return;
+      } catch (err) {
+        console.warn('[wia] session restore failed:', err);
+        sessionStorage.removeItem('wia:project');
+      }
+    }
+
     this.showProjects();
   }
 
   showProjects() {
     this.root.innerHTML = '';
+    this.state.currentProject = null;
+    sessionStorage.removeItem('wia:project');
     this.currentView = new ProjectsView({
       onOpen: (path) => this.openProject(path),
     });
@@ -36,6 +52,7 @@ class App {
   async openProject(projectPath) {
     this.root.innerHTML = '';
     this.state.currentProject = projectPath;
+    sessionStorage.setItem('wia:project', projectPath);
 
     try {
       // Register in recents

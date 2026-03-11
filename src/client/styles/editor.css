@@ -367,6 +367,11 @@
   background: var(--bg-hover);
 }
 
+.canvas-urlbar__btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .canvas-iframe-container {
   position: relative;
   background: #ffffff;
@@ -639,6 +644,41 @@
 
 .chat-auth-btn:hover { background: #d4643a; }
 .chat-auth-btn:disabled { opacity: 0.6; cursor: default; }
+
+.chat-setup-install-btn,
+.chat-setup-auth-btn {
+  width: 100%;
+  max-width: 260px;
+  justify-content: center;
+  padding: 9px 16px;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.chat-auth-step-done {
+  background: #2ea043 !important;
+  border-color: #2ea043 !important;
+  color: #fff !important;
+  font-size: 10px;
+}
+
+.chat-auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 260px;
+  margin: 12px 0 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.chat-auth-divider::before,
+.chat-auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
 
 /* Header */
 .chat-header {
@@ -1467,6 +1507,13 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.git-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .git-header-branch {
