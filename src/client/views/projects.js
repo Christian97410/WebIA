@@ -17,13 +17,23 @@ export class ProjectsView {
   }
 
   showUpdateBanner(version, downloadUrl) {
-    const header = this.el.querySelector('.projects-header');
-    if (!header || header.querySelector('.update-btn')) return;
-    const btn = h('button', {
-      className: 'update-btn',
-      onClick: () => { window.open(downloadUrl, '_blank'); },
-    }, `Update v${version}`);
-    header.appendChild(btn);
+    if (document.querySelector('.update-toast')) return;
+
+    const toast = h('div', { className: 'update-toast' },
+      h('div', { className: 'update-toast__text' },
+        'Update available: ',
+        h('span', { className: 'update-toast__version' }, `v${version}`),
+      ),
+      h('button', {
+        className: 'update-toast__btn',
+        onClick: () => { location.href = downloadUrl; },
+      }, 'Download'),
+      h('button', {
+        className: 'update-toast__close',
+        onClick: () => toast.remove(),
+      }, '\u2715'),
+    );
+    document.body.appendChild(toast);
   }
 
   async load() {

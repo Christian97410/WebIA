@@ -324,35 +324,13 @@ export class EditorView {
     this._codeTabBar = h('div', { className: 'code-tabs' });
     this._codeOpenTabs = []; // { path, name, modified }
 
-    this.codeTextarea = h('textarea', {
-      className: 'code-textarea',
-      spellcheck: 'false',
-      placeholder: 'Select a file to view its source...',
-    });
-    this.codeTextarea.addEventListener('input', () => {
-      this._codeModified = true;
-      this._updateCodeTab();
-    });
-    this.codeTextarea.addEventListener('keydown', (e) => {
-      // Tab inserts 2 spaces
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const start = this.codeTextarea.selectionStart;
-        const end = this.codeTextarea.selectionEnd;
-        this.codeTextarea.value = this.codeTextarea.value.substring(0, start) + '  ' + this.codeTextarea.value.substring(end);
-        this.codeTextarea.selectionStart = this.codeTextarea.selectionEnd = start + 2;
-        this._codeModified = true;
-        this._updateCodeTab();
-      }
-      // Cmd/Ctrl+S to save
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault();
-        this._saveCurrentCodeFile();
-      }
-    });
+    this._codeBreadcrumb = h('div', { className: 'code-breadcrumb' });
+    this._cmContainer = h('div', { className: 'code-cm-container' });
+    this._cmEditor = null; // Lazy-loaded CodeEditor instance
 
     this.codeEditorWrapper.appendChild(this._codeTabBar);
-    this.codeEditorWrapper.appendChild(this.codeTextarea);
+    this.codeEditorWrapper.appendChild(this._codeBreadcrumb);
+    this.codeEditorWrapper.appendChild(this._cmContainer);
     center.appendChild(this.codeEditorWrapper);
 
     // Splitter
@@ -3078,6 +3056,35 @@ export class EditorView {
     return el;
   }
 
+  async _ensureCodeEditor() {
+    if (this._cmEditor) return;
+    const { CodeEditor } = await import('../components/code-editor.js');
+    this._cmEditor = new CodeEditor(this._cmContainer, {
+      onSave: () => this._saveCurrentCodeFile(),
+      onChange: () => {
+        this._codeModified = true;
+        this._updateCodeTab();
+      },
+    });
+  }
+
+  _renderBreadcrumb(filePath) {
+    this._codeBreadcrumb.innerHTML = '';
+    if (!filePath) return;
+    const rel = filePath.replace(this.projectPath + '/', '');
+    const parts = rel.split('/');
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        const sep = h('span', { className: 'code-breadcrumb-sep' });
+        sep.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        this._codeBreadcrumb.appendChild(sep);
+      }
+      this._codeBreadcrumb.appendChild(
+        h('span', { className: 'code-breadcrumb-seg' }, parts[i])
+      );
+    }
+  }
+
   async _openCodeFile(filePath) {
     // Save previous file if modified
     await this._saveCurrentCodeFile();
@@ -3091,7 +3098,9 @@ export class EditorView {
       try {
         if (attempt > 0) await new Promise(r => setTimeout(r, 300));
         const data = await api.get(url);
-        this.codeTextarea.value = data.content || '';
+        await this._ensureCodeEditor();
+        this._cmEditor.setContent(data.content || '', filePath);
+        this._renderBreadcrumb(filePath);
         lastErr = null;
         break;
       } catch (e) {
@@ -3100,7 +3109,8 @@ export class EditorView {
     }
     if (lastErr) {
       console.error('[code-editor] Failed to load file:', url, lastErr);
-      this.codeTextarea.value = `// Error loading file: ${lastErr.message}\n// Path: ${filePath}`;
+      await this._ensureCodeEditor();
+      this._cmEditor.setContent(`// Error loading file: ${lastErr.message}\n// Path: ${filePath}`, filePath);
     }
 
     // Update tab bar
@@ -3156,7 +3166,8 @@ export class EditorView {
         this._openCodeFile(this._codeOpenTabs[this._codeOpenTabs.length - 1].path);
       } else {
         this._currentCodeFile = null;
-        this.codeTextarea.value = '';
+        if (this._cmEditor) this._cmEditor.setContent('', null);
+        this._codeBreadcrumb.innerHTML = '';
         this._renderCodeTabs();
       }
     } else {
@@ -3169,7 +3180,7 @@ export class EditorView {
     try {
       await api.post('/api/files/write', {
         path: this._currentCodeFile,
-        content: this.codeTextarea.value,
+        content: this._cmEditor?.getContent() || '',
       });
       this._codeModified = false;
       this._updateCodeTab();
@@ -3515,16 +3526,23 @@ export class EditorView {
   }
 
   showUpdateBanner(version, downloadUrl) {
-    const topbarRight = this.el.querySelector('.topbar-right');
-    if (!topbarRight || topbarRight.querySelector('.update-btn')) return;
+    if (document.querySelector('.update-toast')) return;
 
-    const btn = h('button', {
-      className: 'update-btn',
-      onClick: () => { window.open(downloadUrl, '_blank'); },
-    }, `Update v${version}`);
-
-    topbarRight.prepend(h('div', { className: 'topbar-separator' }));
-    topbarRight.prepend(btn);
+    const toast = h('div', { className: 'update-toast' },
+      h('div', { className: 'update-toast__text' },
+        'Update available: ',
+        h('span', { className: 'update-toast__version' }, `v${version}`),
+      ),
+      h('button', {
+        className: 'update-toast__btn',
+        onClick: () => { location.href = downloadUrl; },
+      }, 'Download'),
+      h('button', {
+        className: 'update-toast__close',
+        onClick: () => toast.remove(),
+      }, '\u2715'),
+    );
+    document.body.appendChild(toast);
   }
 
   // Shortcuts
