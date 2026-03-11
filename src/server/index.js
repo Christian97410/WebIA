@@ -40,6 +40,15 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   app.use(express.json({ limit: '5mb' }));
 
+  // Allow cross-origin API access (needed when Tauri WebView navigates
+  // from the tauri:// protocol to http://localhost — origin may differ).
+  app.use('/api', (req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
   // When a framework dev server is active, proxy iframe requests BEFORE
   // express.static so the root "/" serves the project page, not WebIA's index.html.
   // Sec-Fetch-Dest: iframe identifies the initial <iframe src="..."> load.

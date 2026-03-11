@@ -146,89 +146,116 @@ export async function createAIRouter() {
     });
   });
 
-  // ── POST /setup/install ─────────────────────────────────────────────────
-  // Install Claude Code CLI globally via npm.
-  router.post('/setup/install', (req, res) => {
+  // ── GET /setup/install ──────────────────────────────────────────────────
+  // Install Claude Code CLI globally via npm. Streams progress via SSE.
+  router.get('/setup/install', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
     const env = shellEnv();
     const child = spawn('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let stdout = '', stderr = '';
-    child.stdout.on('data', d => stdout += d);
-    child.stderr.on('data', d => stderr += d);
+    let stderr = '';
+    let progress = 0;
+    let lastStage = '';
+
+    const parseProgress = (text) => {
+      const t = text.toLowerCase();
+      // npm outputs progress info to stderr
+      if (t.includes('idealtre') || t.includes('resolv')) {
+        if (lastStage !== 'resolve') { lastStage = 'resolve'; progress = 10; }
+      } else if (t.includes('fetch') || t.includes('http')) {
+        if (progress < 40) progress = Math.min(progress + 5, 40);
+        lastStage = 'fetch';
+      } else if (t.includes('reify') || t.includes('extract')) {
+        if (progress < 70) progress = Math.min(progress + 3, 70);
+        lastStage = 'reify';
+      } else if (t.includes('added') || t.includes('link')) {
+        progress = 85;
+        lastStage = 'link';
+      }
+      return progress;
+    };
+
+    const stages = { resolve: 'Resolving dependencies...', fetch: 'Downloading packages...', reify: 'Installing packages...', link: 'Linking CLI...' };
+
+    send({ progress: 2, stage: 'Starting npm install...' });
+
+    child.stderr.on('data', (d) => {
+      stderr += d.toString();
+      const p = parseProgress(d.toString());
+      send({ progress: p, stage: stages[lastStage] || 'Installing...' });
+    });
+
+    child.stdout.on('data', (d) => {
+      const p = parseProgress(d.toString());
+      send({ progress: p, stage: stages[lastStage] || 'Installing...' });
+    });
 
     child.on('close', async (code) => {
       if (code === 0) {
-        // Re-init SDK now that CLI is installed
+        send({ progress: 90, stage: 'Initializing SDK...' });
         sdkInitDone = false;
         sdkAvailable = false;
         sdkRouter = null;
         await initSDK();
-        res.json({ success: true, sdkAvailable });
+        send({ progress: 100, stage: 'Done', success: true, sdkAvailable });
       } else {
-        res.status(500).json({ success: false, error: stderr || 'npm install failed' });
+        send({ progress: 0, stage: 'Installation failed', success: false, error: stderr || 'npm install failed' });
       }
+      res.end();
     });
 
     child.on('error', (err) => {
-      res.status(500).json({ success: false, error: err.message });
+      send({ progress: 0, stage: 'Installation failed', success: false, error: err.message });
+      res.end();
     });
+
+    req.on('close', () => { child.kill(); });
   });
 
   // ── POST /setup/auth ────────────────────────────────────────────────────
-  // Start Claude auth login. Returns the auth URL for the user to visit.
+  // Start Claude auth login. Opens the browser for OAuth, then polls for completion.
   router.post('/setup/auth', (req, res) => {
     const env = shellEnv();
     const claude = resolveCmd('claude');
-    const child = spawn(claude, ['auth', 'login', '--no-browser'], {
+
+    // `claude auth login` opens the browser automatically — no --no-browser flag
+    const child = spawn(claude, ['auth', 'login'], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let output = '';
-    let responded = false;
 
-    const onData = (data) => {
-      output += data.toString();
-      // Claude auth outputs a URL the user needs to visit
-      const urlMatch = output.match(/(https:\/\/[^\s]+)/);
-      if (urlMatch && !responded) {
-        responded = true;
-        res.json({ success: true, authUrl: urlMatch[1] });
-      }
-    };
+    child.stdout.on('data', (d) => { output += d.toString(); });
+    child.stderr.on('data', (d) => { output += d.toString(); });
 
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
+    // Respond immediately — browser will open on its own
+    res.json({ success: true, browserOpened: true });
 
     child.on('close', async () => {
-      // Re-check SDK availability after auth
+      // Re-check SDK availability after auth completes
       sdkInitDone = false;
       sdkAvailable = false;
       sdkRouter = null;
       await initSDK();
-      if (!responded) {
-        res.json({ success: true, message: 'Auth completed', sdkAvailable });
-      }
     });
 
-    child.on('error', (err) => {
-      if (!responded) {
-        responded = true;
-        res.status(500).json({ success: false, error: err.message });
-      }
+    child.on('error', () => {
+      // Auth process failed silently — polling will detect it
     });
 
-    // Timeout after 60s
-    setTimeout(() => {
-      if (!responded) {
-        responded = true;
-        child.kill();
-        res.status(504).json({ success: false, error: 'Auth timed out' });
-      }
-    }, 60000);
+    // Kill the process if it takes too long
+    setTimeout(() => { child.kill(); }, 120000);
   });
 
   // ── GET /status ───────────────────────────────────────────────────────────

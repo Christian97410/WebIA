@@ -525,66 +525,90 @@ export class EditorView {
   renderTerminalPanel() {
     const panel = h('div', { className: 'terminal-panel' });
 
-    this._termOutput = h('div', { className: 'term-output' });
-    panel.appendChild(this._termOutput);
-
-    const inputRow = h('div', { className: 'term-input-row' });
-    this._termPrompt = h('span', { className: 'term-prompt' }, '$ ');
-    this._termInput = h('input', {
-      className: 'term-input',
-      type: 'text',
-      spellcheck: 'false',
-      placeholder: 'Type a command...',
-    });
-
-    this._termHistory = [];
-    this._termHistoryIdx = -1;
-
-    this._termInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        const cmd = this._termInput.value;
-        this._termInput.value = '';
-        if (cmd.trim()) {
-          this._termHistory.unshift(cmd);
-          this._termHistoryIdx = -1;
-        }
-        this._termWrite(`$ ${cmd}\n`, 'term-line-cmd');
-        this._termSendInput(cmd + '\n');
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (this._termHistoryIdx < this._termHistory.length - 1) {
-          this._termHistoryIdx++;
-          this._termInput.value = this._termHistory[this._termHistoryIdx];
-        }
-      }
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (this._termHistoryIdx > 0) {
-          this._termHistoryIdx--;
-          this._termInput.value = this._termHistory[this._termHistoryIdx];
-        } else {
-          this._termHistoryIdx = -1;
-          this._termInput.value = '';
-        }
-      }
-      // Ctrl+C
-      if (e.key === 'c' && e.ctrlKey) {
-        this._termSendInput('\x03');
-      }
-    });
-
-    inputRow.append(this._termPrompt, this._termInput);
-    panel.appendChild(inputRow);
+    // xterm.js container
+    this._termContainer = h('div', { className: 'term-xterm-wrap' });
+    panel.appendChild(this._termContainer);
 
     return panel;
   }
 
-  _termWrite(text, className) {
-    const line = h('div', { className: className || 'term-line' });
-    line.textContent = text;
-    this._termOutput.appendChild(line);
-    this._termOutput.scrollTop = this._termOutput.scrollHeight;
+  _initXterm() {
+    if (this._xterm) return;
+
+    const Terminal = window.Terminal;
+    const FitAddon = window.FitAddon?.FitAddon || window.FitAddon;
+    const WebLinksAddon = window.WebLinksAddon?.WebLinksAddon || window.WebLinksAddon;
+
+    if (!Terminal) return; // xterm.js not loaded
+
+    this._xterm = new Terminal({
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      fontSize: 12,
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', 'Monaco', monospace",
+      lineHeight: 1.3,
+      scrollback: 5000,
+      theme: {
+        background: '#1a1a1a',
+        foreground: '#cccccc',
+        cursor: '#cccccc',
+        cursorAccent: '#1a1a1a',
+        selectionBackground: 'rgba(255, 255, 255, 0.15)',
+        black: '#1a1a1a',
+        red: '#f87171',
+        green: '#4ade80',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#cccccc',
+        brightBlack: '#666666',
+        brightRed: '#fca5a5',
+        brightGreen: '#86efac',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#ffffff',
+      },
+    });
+
+    this._fitAddon = FitAddon ? new FitAddon() : null;
+    if (this._fitAddon) this._xterm.loadAddon(this._fitAddon);
+    if (WebLinksAddon) this._xterm.loadAddon(new WebLinksAddon());
+
+    this._xterm.open(this._termContainer);
+    if (this._fitAddon) this._fitAddon.fit();
+
+    // Send input to server
+    this._xterm.onData((data) => {
+      if (this.ws?.readyState === 1) {
+        this.ws.send(JSON.stringify({ type: 'terminal-input', data }));
+      }
+    });
+
+    // Resize handling
+    this._termResizeObs = new ResizeObserver(() => {
+      if (this._fitAddon && this.terminalPanel.style.display !== 'none') {
+        try {
+          this._fitAddon.fit();
+          if (this.ws?.readyState === 1 && this._xterm) {
+            this.ws.send(JSON.stringify({
+              type: 'terminal-resize',
+              cols: this._xterm.cols,
+              rows: this._xterm.rows,
+            }));
+          }
+        } catch {}
+      }
+    });
+    this._termResizeObs.observe(this._termContainer);
+  }
+
+  _termWrite(text) {
+    if (this._xterm) {
+      this._xterm.write(text);
+    }
   }
 
   _termSendInput(data) {
@@ -597,10 +621,16 @@ export class EditorView {
     if (this._termStarted) return;
     this._termStarted = true;
 
+    this._initXterm();
+
     if (this.ws?.readyState === 1) {
+      const cols = this._xterm?.cols || 80;
+      const rows = this._xterm?.rows || 24;
       this.ws.send(JSON.stringify({
         type: 'terminal-start',
         cwd: this.projectPath,
+        cols,
+        rows,
       }));
     }
   }
@@ -616,7 +646,11 @@ export class EditorView {
 
     if (tab === 'terminal') {
       this._startTerminal();
-      this._termInput?.focus();
+      // Refit after display change
+      requestAnimationFrame(() => {
+        if (this._fitAddon) this._fitAddon.fit();
+        this._xterm?.focus();
+      });
     }
   }
 
@@ -728,26 +762,62 @@ export class EditorView {
     const btn = this.chatAuthScreen.querySelector('.chat-setup-install-btn');
     const errorEl = this.chatAuthScreen.querySelector('.chat-auth-error');
     btn.disabled = true;
-    btn.textContent = 'Installing...';
+    btn.style.display = 'none';
     errorEl.textContent = '';
 
+    // Insert progress bar after the button
+    const progressWrap = document.createElement('div');
+    progressWrap.className = 'chat-install-progress';
+    progressWrap.innerHTML = `
+      <div class="chat-install-progress-bar"><div class="chat-install-progress-fill"></div></div>
+      <div class="chat-install-progress-info">
+        <span class="chat-install-progress-stage">Starting...</span>
+        <span class="chat-install-progress-pct">0%</span>
+      </div>
+    `;
+    btn.parentNode.insertBefore(progressWrap, btn.nextSibling);
+
+    const fill = progressWrap.querySelector('.chat-install-progress-fill');
+    const stage = progressWrap.querySelector('.chat-install-progress-stage');
+    const pct = progressWrap.querySelector('.chat-install-progress-pct');
+
     try {
-      const result = await api.post('/api/ai/setup/install', {});
-      if (result.success) {
-        // Re-check setup state and update screen
-        const setup = await api.get('/api/ai/setup/status');
-        if (setup.sdkAvailable || setup.ready) {
-          this.setChatConnected('Claude Code');
-        } else {
-          this._renderAuthScreen(setup);
+      const es = new EventSource('/api/ai/setup/install');
+      es.onmessage = async (e) => {
+        const data = JSON.parse(e.data);
+        fill.style.width = `${data.progress}%`;
+        stage.textContent = data.stage || 'Installing...';
+        pct.textContent = `${data.progress}%`;
+
+        if (data.success === true) {
+          es.close();
+          const setup = await api.get('/api/ai/setup/status');
+          if (setup.sdkAvailable || setup.ready) {
+            this.setChatConnected('Claude Code');
+          } else {
+            this._renderAuthScreen(setup);
+          }
+        } else if (data.success === false) {
+          es.close();
+          progressWrap.remove();
+          errorEl.textContent = data.error || 'Installation failed';
+          btn.style.display = '';
+          btn.disabled = false;
+          btn.textContent = 'Install Claude Code';
         }
-      } else {
-        errorEl.textContent = result.error || 'Installation failed';
+      };
+      es.onerror = () => {
+        es.close();
+        progressWrap.remove();
+        errorEl.textContent = 'Installation failed — try again';
+        btn.style.display = '';
         btn.disabled = false;
         btn.textContent = 'Install Claude Code';
-      }
+      };
     } catch (err) {
+      progressWrap.remove();
       errorEl.textContent = 'Installation failed — try again';
+      btn.style.display = '';
       btn.disabled = false;
       btn.textContent = 'Install Claude Code';
     }
@@ -762,21 +832,15 @@ export class EditorView {
 
     try {
       const result = await api.post('/api/ai/setup/auth', {});
-      if (result.authUrl) {
-        // Open auth URL in browser
-        if (window.__TAURI__) {
-          window.__TAURI__.shell.open(result.authUrl);
-        } else {
-          window.open(result.authUrl, '_blank');
-        }
+      if (result.success && result.browserOpened) {
+        // Browser was opened by the CLI directly
         btn.textContent = 'Waiting for sign in...';
         errorEl.textContent = '';
-        // Poll for auth completion
         this._pollAuthStatus();
       } else if (result.sdkAvailable) {
         this.setChatConnected('Claude Code');
       } else {
-        errorEl.textContent = 'Could not start authentication';
+        errorEl.textContent = result.error || 'Could not start authentication';
         btn.disabled = false;
         btn.textContent = 'Sign in with Anthropic';
       }
@@ -3021,11 +3085,22 @@ export class EditorView {
     this._currentCodeFile = filePath;
     this._codeModified = false;
 
-    try {
-      const data = await api.get(`/api/files/read?path=${encodeURIComponent(filePath)}`);
-      this.codeTextarea.value = data.content || '';
-    } catch (e) {
-      this.codeTextarea.value = `// Error loading file: ${e.message}`;
+    const url = `/api/files/read?path=${encodeURIComponent(filePath)}`;
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 300));
+        const data = await api.get(url);
+        this.codeTextarea.value = data.content || '';
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (lastErr) {
+      console.error('[code-editor] Failed to load file:', url, lastErr);
+      this.codeTextarea.value = `// Error loading file: ${lastErr.message}\n// Path: ${filePath}`;
     }
 
     // Update tab bar
@@ -3573,6 +3648,7 @@ export class EditorView {
         // Re-start terminal if it was previously started
         if (this._termStarted) {
           this._termStarted = false;
+          if (this._xterm) this._xterm.clear();
           this._startTerminal();
         }
       };
@@ -3595,10 +3671,16 @@ export class EditorView {
           this._termWrite(msg.data);
         }
         if (msg.type === 'terminal-ready') {
-          this._termWrite(`Connected to ${msg.shell} in ${msg.cwd}\n`, 'term-line-info');
+          // PTY mode: shell prompt will appear naturally
+          // Pipe mode: show a connection message
+          if (!msg.pty && this._xterm) {
+            this._xterm.write(`\x1b[2m${msg.shell} in ${msg.cwd}\x1b[0m\r\n`);
+          }
         }
         if (msg.type === 'terminal-exit') {
-          this._termWrite(`\nProcess exited (code ${msg.code})\n`, 'term-line-info');
+          if (this._xterm) {
+            this._xterm.write(`\r\n\x1b[2mProcess exited (code ${msg.code})\x1b[0m\r\n`);
+          }
           this._termStarted = false;
         }
       };

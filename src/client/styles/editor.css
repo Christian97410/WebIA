@@ -662,6 +662,42 @@
   font-size: 10px;
 }
 
+/* Install progress bar */
+.chat-install-progress {
+  width: 100%;
+  max-width: 260px;
+  margin-top: 8px;
+}
+
+.chat-install-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-surface);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.chat-install-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #E87443;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.chat-install-progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.chat-install-progress-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
 .chat-auth-divider {
   display: flex;
   align-items: center;
@@ -1435,11 +1471,24 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  overflow: hidden;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .breadcrumb-item {
   cursor: pointer;
   transition: color var(--transition-fast);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.breadcrumb-item:last-child {
+  max-width: 260px;
+  flex-shrink: 1;
 }
 
 .breadcrumb-item:hover {
@@ -1962,57 +2011,42 @@
   /* no extra styles, just a container */
 }
 
-/* ── Terminal panel ────────────────────────────────────────── */
+/* ── Terminal panel (xterm.js) ─────────────────────────────── */
 .terminal-panel {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  background: var(--bg-canvas);
+  background: #1a1a1a;
 }
 
-.term-output {
+.term-xterm-wrap {
   flex: 1;
-  overflow-y: auto;
-  padding: 8px 12px;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-all;
+  min-height: 0;
+  padding: 4px 0 0 8px;
 }
 
-.term-line-cmd { color: var(--text-primary); }
-.term-line-info { color: var(--text-tertiary); font-style: italic; }
-
-.term-input-row {
-  display: flex;
-  align-items: center;
-  padding: 4px 12px 8px;
-  gap: 4px;
-  flex-shrink: 0;
-  background: var(--bg-canvas);
-  border-top: 1px solid var(--border-subtle);
+.term-xterm-wrap .xterm {
+  height: 100%;
 }
 
-.term-prompt {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  color: var(--accent);
-  flex-shrink: 0;
+.term-xterm-wrap .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
 }
 
-.term-input {
-  flex: 1;
-  background: none;
-  border: none;
-  outline: none;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  color: var(--text-primary);
+.term-xterm-wrap .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
 }
-.term-input::placeholder { color: var(--text-tertiary); }
+
+.term-xterm-wrap .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 3px;
+}
+
+.term-xterm-wrap .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
 
 /* ── Bottombar panel toggles ──────────────────────────────── */
 .bottombar-toggles {

@@ -2,10 +2,19 @@ import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
 
+// Try to load node-pty for proper terminal emulation
+let pty = null;
+try {
+  pty = await import('node-pty');
+} catch {
+  // node-pty not available — fall back to basic pipes
+}
+
 export function setupWebSocket(wss) {
   wss.on('connection', (ws) => {
     let projectWatcher = null;
     let terminalProcess = null;
+    let usePty = !!pty;
 
     const safeSend = (data) => {
       if (ws.readyState === 1) ws.send(JSON.stringify(data));
@@ -42,50 +51,90 @@ export function setupWebSocket(wss) {
       // Terminal: spawn a shell session
       if (msg.type === 'terminal-start') {
         if (terminalProcess) {
-          terminalProcess.kill();
+          if (usePty) terminalProcess.kill();
+          else terminalProcess.kill();
           terminalProcess = null;
         }
 
         const shell = platform() === 'win32' ? 'cmd.exe' : (process.env.SHELL || '/bin/zsh');
         const cwd = msg.cwd || process.cwd();
+        const cols = msg.cols || 80;
+        const rows = msg.rows || 24;
 
-        terminalProcess = spawn(shell, [], {
-          cwd,
-          env: { ...process.env, TERM: 'dumb', LANG: 'en_US.UTF-8' },
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+        if (usePty) {
+          // Real PTY — full terminal emulation (colors, cursor, resize)
+          try {
+            terminalProcess = pty.spawn(shell, [], {
+              name: 'xterm-256color',
+              cols,
+              rows,
+              cwd,
+              env: { ...process.env, LANG: 'en_US.UTF-8' },
+            });
 
-        terminalProcess.stdout.on('data', (data) => {
-          safeSend({ type: 'terminal-output', data: data.toString() });
-        });
+            terminalProcess.onData((data) => {
+              safeSend({ type: 'terminal-output', data });
+            });
 
-        terminalProcess.stderr.on('data', (data) => {
-          safeSend({ type: 'terminal-output', data: data.toString() });
-        });
+            terminalProcess.onExit(({ exitCode }) => {
+              safeSend({ type: 'terminal-exit', code: exitCode });
+              terminalProcess = null;
+            });
 
-        terminalProcess.on('exit', (code) => {
-          safeSend({ type: 'terminal-exit', code });
-          terminalProcess = null;
-        });
+            safeSend({ type: 'terminal-ready', shell, cwd, pty: true });
+          } catch {
+            // PTY spawn failed — fall back to pipes
+            usePty = false;
+          }
+        }
 
-        safeSend({ type: 'terminal-ready', shell, cwd });
+        if (!usePty) {
+          // Fallback: basic pipes (no ANSI, no resize)
+          terminalProcess = spawn(shell, [], {
+            cwd,
+            env: { ...process.env, TERM: 'dumb', LANG: 'en_US.UTF-8' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+
+          terminalProcess.stdout.on('data', (data) => {
+            safeSend({ type: 'terminal-output', data: data.toString() });
+          });
+
+          terminalProcess.stderr.on('data', (data) => {
+            safeSend({ type: 'terminal-output', data: data.toString() });
+          });
+
+          terminalProcess.on('exit', (code) => {
+            safeSend({ type: 'terminal-exit', code });
+            terminalProcess = null;
+          });
+
+          safeSend({ type: 'terminal-ready', shell, cwd, pty: false });
+        }
       }
 
       // Terminal: write stdin
       if (msg.type === 'terminal-input' && terminalProcess) {
-        terminalProcess.stdin.write(msg.data);
+        if (usePty) {
+          terminalProcess.write(msg.data);
+        } else {
+          terminalProcess.stdin.write(msg.data);
+        }
       }
 
-      // Terminal: resize (no-op without pty, but keep for future)
-      if (msg.type === 'terminal-resize') {
-        // Would need node-pty for real resize support
+      // Terminal: resize
+      if (msg.type === 'terminal-resize' && terminalProcess && usePty) {
+        try {
+          terminalProcess.resize(msg.cols, msg.rows);
+        } catch {}
       }
     });
 
     ws.on('close', () => {
       if (projectWatcher) projectWatcher.close();
       if (terminalProcess) {
-        terminalProcess.kill();
+        if (usePty) terminalProcess.kill();
+        else terminalProcess.kill();
         terminalProcess = null;
       }
     });
