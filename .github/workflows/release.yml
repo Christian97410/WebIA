@@ -34,14 +34,30 @@ jobs:
       - name: Build sidecar
         run: ./scripts/build-sidecar.sh aarch64-apple-darwin
 
-      - name: Build Tauri app
+      - name: Build Tauri app (app bundle only)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build --target aarch64-apple-darwin
+        run: npx tauri build --target aarch64-apple-darwin --bundles app
 
       - name: List bundle contents
         run: find src-tauri/target/aarch64-apple-darwin/release/bundle -type f | sort
+
+      - name: Create DMG manually
+        run: |
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/WebIA.app"
+          DMG_NAME="WebIA_${{ github.ref_name }}_aarch64.dmg"
+
+          # Create a temporary directory for DMG contents
+          mkdir -p dmg-contents
+          cp -R "$APP_PATH" dmg-contents/
+          ln -s /Applications dmg-contents/Applications
+
+          # Create DMG
+          hdiutil create -volname "WebIA" \
+            -srcfolder dmg-contents \
+            -ov -format UDZO \
+            "release-assets/${DMG_NAME}"
 
       - name: Create release with updater JSON
         env:
@@ -54,8 +70,7 @@ jobs:
 
           # Collect assets
           mkdir -p release-assets
-          cp "$BUNDLE_DIR/dmg/"*.dmg release-assets/
-          cp "$BUNDLE_DIR/macos/"*.tar.gz release-assets/
+          cp "$BUNDLE_DIR/macos/"*.tar.gz release-assets/ 2>/dev/null || true
 
           # Read signature
           SIG_FILE="$BUNDLE_DIR/macos/WebIA.app.tar.gz.sig"
