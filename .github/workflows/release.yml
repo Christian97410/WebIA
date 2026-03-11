@@ -35,34 +35,44 @@ jobs:
         run: ./scripts/build-sidecar.sh aarch64-apple-darwin
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'WebIA ${{ github.ref_name }}'
-          releaseBody: 'Download the .dmg file below to install WebIA.'
-          releaseDraft: false
-          prerelease: false
-          args: --target aarch64-apple-darwin
+        run: npx tauri build --target aarch64-apple-darwin
 
-      - name: Generate and upload updater JSON
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare release assets
         run: |
-          # Read the signature file
-          SIG_FILE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/WebIA.app.tar.gz.sig"
-          echo "Looking for signature at: $SIG_FILE"
-          ls -la "$SIG_FILE"
-          SIGNATURE=$(cat "$SIG_FILE")
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          echo "=== Bundle contents ==="
+          find "$BUNDLE_DIR" -type f | sort
+
+          # Copy assets to a clean directory
+          mkdir -p release-assets
+          cp "$BUNDLE_DIR/dmg/"*.dmg release-assets/
+          cp "$BUNDLE_DIR/macos/"*.tar.gz release-assets/
+          cp "$BUNDLE_DIR/macos/"*.tar.gz.sig release-assets/ || echo "No .sig file found"
+
+          echo "=== Release assets ==="
+          ls -la release-assets/
+
+      - name: Generate updater JSON
+        run: |
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
           DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          URL="https://github.com/Christian97410/WebIA/releases/download/${TAG}/WebIA_aarch64.app.tar.gz"
 
-          cat > latest.json <<EOF
+          SIG_FILE=$(ls release-assets/*.tar.gz.sig 2>/dev/null | head -1)
+          if [ -n "$SIG_FILE" ]; then
+            SIGNATURE=$(cat "$SIG_FILE")
+          else
+            echo "WARNING: No signature file found, updater won't work"
+            SIGNATURE=""
+          fi
+
+          TAR_NAME=$(ls release-assets/*.tar.gz | head -1 | xargs basename)
+          URL="https://github.com/Christian97410/WebIA/releases/download/${TAG}/${TAR_NAME}"
+
+          cat > release-assets/latest.json <<ENDJSON
           {
             "version": "${VERSION}",
             "notes": "WebIA ${TAG}",
@@ -74,9 +84,19 @@ jobs:
               }
             }
           }
-          EOF
+          ENDJSON
 
-          # Clean up indentation
-          python3 -c "import json,sys; d=json.load(open('latest.json')); json.dump(d,open('latest.json','w'),indent=2)"
+          python3 -c "import json; d=json.load(open('release-assets/latest.json')); json.dump(d,open('release-assets/latest.json','w'),indent=2)"
+          echo "=== latest.json ==="
+          cat release-assets/latest.json
 
-          gh release upload "${TAG}" latest.json --clobber
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh release create "${TAG}" \
+            --title "WebIA ${TAG}" \
+            --notes "Download the .dmg file below to install WebIA." \
+            release-assets/* \
+            || gh release upload "${TAG}" release-assets/* --clobber
