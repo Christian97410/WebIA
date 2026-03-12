@@ -2,31 +2,25 @@ import { Router } from 'express';
 import { spawn, execFileSync } from 'child_process';
 import { shellEnv, resolveCmd } from '../shell-path.js';
 
-// Lazy-load the SDK route — falls back gracefully if not installed.
+import { createAISDKRouter, isSDKAvailable } from './ai-sdk.js';
+
+// SDK route — uses Claude CLI as backend.
 let sdkRouter = null;
 let sdkAvailable = false;
-let sdkInitDone = false;
 
 // Auth status cache (avoid spawning claude every 3s during polling)
 let authCache = { authenticated: false, ts: 0 };
 const AUTH_CACHE_TTL = 5000; // 5s
 
-async function initSDK() {
-  if (sdkInitDone) return;
-  sdkInitDone = true;
-  try {
-    const { createAISDKRouter, isSDKAvailable } = await import('./ai-sdk.js');
-    sdkAvailable = isSDKAvailable();
-    if (sdkAvailable) {
-      sdkRouter = createAISDKRouter();
-    }
-  } catch {
-    // SDK module not available — raw API only.
+function refreshSDK() {
+  sdkAvailable = isSDKAvailable();
+  if (sdkAvailable && !sdkRouter) {
+    sdkRouter = createAISDKRouter();
   }
 }
 
-export async function createAIRouter() {
-  await initSDK();
+export function createAIRouter() {
+  refreshSDK();
   const router = Router();
 
   // ── SDK sub-router ────────────────────────────────────────────────────────
@@ -219,10 +213,8 @@ export async function createAIRouter() {
     child.on('close', async (code) => {
       if (code === 0) {
         send({ progress: 90, stage: 'Initializing SDK...' });
-        sdkInitDone = false;
-        sdkAvailable = false;
         sdkRouter = null;
-        await initSDK();
+        refreshSDK();
         send({ progress: 100, stage: 'Done', success: true, sdkAvailable });
       } else {
         send({ progress: 0, stage: 'Installation failed', success: false, error: stderr || 'npm install failed' });
@@ -258,12 +250,10 @@ export async function createAIRouter() {
     // Respond immediately — browser will open on its own
     res.json({ success: true, browserOpened: true });
 
-    child.on('close', async () => {
+    child.on('close', () => {
       // Re-check SDK availability after auth completes
-      sdkInitDone = false;
-      sdkAvailable = false;
       sdkRouter = null;
-      await initSDK();
+      refreshSDK();
     });
 
     child.on('error', () => {

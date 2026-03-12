@@ -2154,7 +2154,45 @@ export class EditorView {
     });
   }
 
-  // Chat with AI
+  // Simple markdown renderer — no external deps
+  _renderMarkdown(text) {
+    if (!text) return '';
+    // Escape HTML
+    let html = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // Code blocks (triple backtick)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
+      `<pre class="chat-code-block"><code>${code.replace(/\n$/, '')}</code></pre>`
+    );
+
+    // Inline code
+    html = html.replace(/`([^`\n]+)`/g, '<code class="chat-code-inline">$1</code>');
+
+    // Bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Italic
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    // Double newlines → paragraph break
+    html = html.replace(/\n\n/g, '</p><p>');
+
+    // Single newlines → <br>
+    html = html.replace(/\n/g, '<br>');
+
+    // Wrap in paragraph
+    html = `<p>${html}</p>`;
+
+    // Clean empty paragraphs
+    html = html.replace(/<p><\/p>/g, '');
+
+    return html;
+  }
+
+  // Chat with AI — SSE streaming with fallback
   async sendChatMessage(text) {
     if (!text) return;
 
@@ -2190,10 +2228,185 @@ export class EditorView {
       } catch {}
     }
 
-    // Loading indicator — Claude style
-    const loading = h('div', { className: 'chat-message chat-message-ai chat-loading' });
-    loading.innerHTML = '<div class="chat-loader"><div class="chat-loader-dot"></div></div><span>Thinking...</span>';
-    this.chatMessages.appendChild(loading);
+    // Create AI message container for streaming
+    const aiMsg = h('div', { className: 'chat-message chat-message-ai' });
+    this.chatMessages.appendChild(aiMsg);
+
+    const scrollToBottom = () => {
+      this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    };
+
+    try {
+      // Attempt SSE streaming via SDK endpoint
+      const response = await fetch('/api/ai/sdk/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: text, context, projectPath: this.projectPath }),
+      });
+
+      if (!response.ok) {
+        // Fallback to non-streaming endpoint
+        await this._sendChatFallback(text, context, aiMsg);
+        scrollToBottom();
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+      let textAccumulator = '';
+      let textDiv = null;
+      let cursorSpan = null;
+      let pendingChanges = null;
+
+      // Add streaming cursor
+      const ensureTextDiv = () => {
+        if (!textDiv) {
+          textDiv = document.createElement('div');
+          textDiv.className = 'chat-text';
+          aiMsg.appendChild(textDiv);
+        }
+        return textDiv;
+      };
+
+      const updateCursor = () => {
+        if (cursorSpan) cursorSpan.remove();
+        cursorSpan = document.createElement('span');
+        cursorSpan.className = 'chat-cursor';
+        const td = ensureTextDiv();
+        td.appendChild(cursorSpan);
+      };
+
+      const removeCursor = () => {
+        if (cursorSpan) {
+          cursorSpan.remove();
+          cursorSpan = null;
+        }
+      };
+
+      updateCursor();
+      scrollToBottom();
+
+      const toolTypeMap = {
+        Read: 'read', View: 'read',
+        Edit: 'edit', Replace: 'edit',
+        Write: 'write',
+        Glob: 'search', Grep: 'search', Search: 'search',
+      };
+
+      // Read stream
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split('\n');
+        // Keep the last potentially incomplete line in buffer
+        sseBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw || raw === '[DONE]') continue;
+
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            continue;
+          }
+
+          if (data.type === 'text') {
+            textAccumulator += data.content || '';
+            const td = ensureTextDiv();
+            removeCursor();
+            td.innerHTML = this._renderMarkdown(textAccumulator);
+            updateCursor();
+            scrollToBottom();
+          } else if (data.type === 'tool_use') {
+            const toolName = data.tool || data.name || '';
+            const toolBase = toolName.split('/').pop().split('.').shift();
+            const dotType = toolTypeMap[toolBase] || toolTypeMap[toolName] || 'search';
+            const input = data.input || {};
+            const filePath = input.file_path || input.path || input.pattern || data.file_path || data.path || '';
+
+            const toolEl = document.createElement('div');
+            toolEl.className = 'chat-tool-use';
+            toolEl.innerHTML =
+              `<span class="chat-tool-dot chat-tool-dot--${dotType}"></span>` +
+              `<span class="chat-tool-name">${toolBase || toolName}</span>` +
+              `<span class="chat-tool-path">${filePath}</span>`;
+            aiMsg.appendChild(toolEl);
+
+            // Move text div + cursor after tool uses so text continues below
+            if (textDiv) {
+              aiMsg.appendChild(textDiv);
+              updateCursor();
+            }
+            scrollToBottom();
+          } else if (data.type === 'thinking') {
+            const details = document.createElement('details');
+            details.className = 'chat-thinking';
+            const summary = document.createElement('summary');
+            summary.className = 'chat-thinking-header';
+            summary.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4"/></svg>Thinking`;
+            const content = document.createElement('div');
+            content.className = 'chat-thinking-content';
+            content.textContent = data.content || '';
+            details.appendChild(summary);
+            details.appendChild(content);
+            aiMsg.appendChild(details);
+            scrollToBottom();
+          } else if (data.type === 'changes_pending') {
+            pendingChanges = data.changes || [];
+            const actions = h('div', { className: 'chat-actions' },
+              h('button', {
+                className: 'chat-btn-accept',
+                onClick: () => this.applyAIChanges(pendingChanges, actions),
+              }, 'Accept'),
+              h('button', {
+                className: 'chat-btn-reject',
+                onClick: () => actions.remove(),
+              }, 'Reject'),
+            );
+            aiMsg.appendChild(actions);
+            scrollToBottom();
+          } else if (data.type === 'done') {
+            removeCursor();
+            scrollToBottom();
+          } else if (data.type === 'error') {
+            removeCursor();
+            const errDiv = document.createElement('div');
+            errDiv.className = 'chat-text';
+            errDiv.textContent = data.content || data.message || 'An error occurred';
+            aiMsg.appendChild(errDiv);
+            scrollToBottom();
+          }
+          // type: 'tool_result' — skip silently
+        }
+      }
+
+      // Cleanup: ensure cursor is removed when stream ends
+      removeCursor();
+
+      // If we got text but stream ended without 'done' event, finalize
+      if (textDiv && textAccumulator) {
+        textDiv.innerHTML = this._renderMarkdown(textAccumulator);
+      }
+    } catch (err) {
+      // Network error or stream failure — fallback
+      console.warn('SSE streaming failed, falling back:', err.message);
+      aiMsg.innerHTML = '';
+      await this._sendChatFallback(text, context, aiMsg);
+    }
+
+    scrollToBottom();
+  }
+
+  // Fallback: non-streaming AI chat
+  async _sendChatFallback(text, context, aiMsg) {
+    aiMsg.innerHTML = '<div class="chat-loader"><div class="chat-loader-dot"></div></div><span>Thinking...</span>';
+    aiMsg.classList.add('chat-loading');
 
     try {
       const result = await api.post('/api/ai/chat', {
@@ -2202,9 +2415,13 @@ export class EditorView {
         projectPath: this.projectPath,
       });
 
-      loading.remove();
+      aiMsg.classList.remove('chat-loading');
+      aiMsg.innerHTML = '';
 
-      const aiMsg = h('div', { className: 'chat-message chat-message-ai' }, result.response);
+      const textDiv = document.createElement('div');
+      textDiv.className = 'chat-text';
+      textDiv.innerHTML = this._renderMarkdown(result.response || '');
+      aiMsg.appendChild(textDiv);
 
       if (result.changes && result.changes.length > 0) {
         const actions = h('div', { className: 'chat-actions' },
@@ -2219,16 +2436,11 @@ export class EditorView {
         );
         aiMsg.appendChild(actions);
       }
-
-      this.chatMessages.appendChild(aiMsg);
     } catch (err) {
-      loading.remove();
-      this.chatMessages.appendChild(
-        h('div', { className: 'chat-message chat-message-ai' }, `Error: ${err.message}`)
-      );
+      aiMsg.classList.remove('chat-loading');
+      aiMsg.innerHTML = '';
+      aiMsg.textContent = `Error: ${err.message}`;
     }
-
-    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
   }
 
   async applyAIChanges(changes, actionsEl) {

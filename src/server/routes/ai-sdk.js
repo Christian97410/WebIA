@@ -1,48 +1,33 @@
 import { Router } from 'express';
 import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join, dirname, resolve } from 'path';
-import { existsSync } from 'fs';
+import { spawn } from 'child_process';
+import { shellEnv, resolveCmd } from '../shell-path.js';
 
 /**
- * AI SDK Router — uses the Claude Code SDK (@anthropic-ai/claude-code-sdk)
- * instead of raw API calls. The SDK provides an agent with file access,
- * streaming responses, and a sandbox-first workflow for changes.
+ * AI SDK Router — uses the Claude Code CLI (`claude --print --output-format stream-json`)
+ * to provide an agent with file access, streaming responses, and a sandbox-first workflow.
  */
 
-let claudeSDK = null;
-let sdkAvailable = false;
-
-// Lazy-load the SDK (no top-level await for SEA compatibility).
-try {
-  import('@anthropic-ai/claude-code-sdk').then(mod => {
-    claudeSDK = mod;
-    sdkAvailable = true;
-  }).catch(() => {});
-} catch {
-  // SDK not installed — this module gracefully degrades.
-}
-
 /**
- * Check whether the Claude Code SDK is available.
+ * Check whether the Claude CLI is available for SDK use.
  */
 export function isSDKAvailable() {
-  return sdkAvailable;
+  try {
+    const p = resolveCmd('claude');
+    return p !== 'claude';
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Create the AI SDK router.
- *
- * Endpoints:
- *   POST /chat        — send a message, get a streamed agent response
- *   POST /accept      — accept pending sandbox changes (apply to real files)
- *   POST /reject      — reject pending sandbox changes (discard)
- *   GET  /status      — SDK availability + session info
  */
 export function createAISDKRouter() {
   const router = Router();
 
   // Active sessions keyed by projectPath.
-  // Each session holds the conversation history and pending changes.
   const sessions = new Map();
 
   // ── POST /chat ──────────────────────────────────────────────────────────────
@@ -53,9 +38,10 @@ export function createAISDKRouter() {
       return res.status(400).json({ error: 'prompt required' });
     }
 
-    if (!sdkAvailable) {
+    if (!isSDKAvailable()) {
       return res.status(503).json({
-        error: 'Claude Code SDK not available. Install @anthropic-ai/claude-code-sdk.',
+        error: 'Claude Code SDK is not available and no ANTHROPIC_API_KEY is set. '
+          + 'Make sure `@anthropic-ai/claude-code` is installed and Claude Code is authenticated (`claude auth login`).',
       });
     }
 
@@ -63,17 +49,14 @@ export function createAISDKRouter() {
       const resolvedPath = projectPath ? resolve(projectPath) : process.cwd();
       const key = sessionId || resolvedPath;
 
-      // Build the system prompt with context from the editor.
       const systemPrompt = buildSDKSystemPrompt(context, resolvedPath);
 
-      // Prepare conversation history.
       let session = sessions.get(key);
       if (!session) {
         session = { messages: [], pendingChanges: [] };
         sessions.set(key, session);
       }
 
-      // Add the new user message.
       session.messages.push({ role: 'user', content: prompt });
 
       // Set up SSE for streaming.
@@ -82,13 +65,12 @@ export function createAISDKRouter() {
       res.setHeader('Connection', 'keep-alive');
       res.flushHeaders();
 
-      // Call the Claude Code SDK agent.
-      const result = await runAgent({
+      // Run Claude CLI as subprocess with streaming JSON output.
+      const result = await runCLIAgent({
         projectPath: resolvedPath,
         systemPrompt,
         messages: session.messages,
         onEvent(event) {
-          // Stream each event to the client as SSE.
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         },
       });
@@ -97,7 +79,6 @@ export function createAISDKRouter() {
       if (result.changes && result.changes.length > 0) {
         session.pendingChanges = result.changes;
 
-        // Write changes to a sandbox directory instead of the real project.
         const sandboxDir = join(resolvedPath, '.wia-sandbox');
         await applySandboxChanges(sandboxDir, resolvedPath, result.changes);
 
@@ -113,13 +94,11 @@ export function createAISDKRouter() {
         );
       }
 
-      // Append the assistant reply to history.
       session.messages.push({
         role: 'assistant',
         content: result.response,
       });
 
-      // Final event.
       res.write(
         `data: ${JSON.stringify({
           type: 'done',
@@ -130,7 +109,6 @@ export function createAISDKRouter() {
 
       res.end();
     } catch (err) {
-      // If headers already sent, write error as SSE event.
       if (res.headersSent) {
         res.write(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`);
         res.end();
@@ -156,16 +134,9 @@ export function createAISDKRouter() {
 
     try {
       const resolvedPath = projectPath ? resolve(projectPath) : key;
-
-      // Apply the sandbox changes to the real project files.
       await applyChangesToProject(resolvedPath, session.pendingChanges);
-
-      // Clear pending.
       session.pendingChanges = [];
-
-      // Clean up sandbox.
       await cleanSandbox(join(resolvedPath, '.wia-sandbox'));
-
       res.json({ accepted: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -186,20 +157,16 @@ export function createAISDKRouter() {
       return res.status(404).json({ error: 'No active session' });
     }
 
-    // Discard pending changes.
     session.pendingChanges = [];
-
-    // Clean up sandbox.
     const resolvedPath = projectPath ? resolve(projectPath) : key;
     await cleanSandbox(join(resolvedPath, '.wia-sandbox'));
-
     res.json({ rejected: true });
   });
 
   // ── GET /status ─────────────────────────────────────────────────────────────
   router.get('/status', (req, res) => {
     res.json({
-      sdkAvailable,
+      sdkAvailable: isSDKAvailable(),
       activeSessions: sessions.size,
     });
   });
@@ -207,17 +174,14 @@ export function createAISDKRouter() {
   return router;
 }
 
-// ── Agent runner ────────────────────────────────────────────────────────────────
+// ── CLI Agent runner ─────────────────────────────────────────────────────────
 
-async function runAgent({ projectPath, systemPrompt, messages, onEvent }) {
-  // Use the Claude Code SDK to create an agent conversation.
-  // The SDK gives the agent file read/write/edit tools scoped to projectPath.
+async function runCLIAgent({ projectPath, systemPrompt, messages, onEvent }) {
+  const claudePath = resolveCmd('claude');
+  const env = shellEnv();
 
-  const { query } = claudeSDK;
-
+  // Build the prompt from conversation history
   const userMessage = messages[messages.length - 1]?.content || '';
-
-  // Build the full prompt including conversation history.
   const conversationContext = messages
     .slice(0, -1)
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
@@ -227,58 +191,105 @@ async function runAgent({ projectPath, systemPrompt, messages, onEvent }) {
     ? `Previous conversation:\n${conversationContext}\n\nUser: ${userMessage}`
     : userMessage;
 
-  let responseText = '';
-  const changes = [];
+  return new Promise((resolve, reject) => {
+    const args = [
+      '--print',
+      '--output-format', 'stream-json',
+      '--dangerously-skip-permissions',
+      '--system-prompt', systemPrompt,
+      '--allowed-tools', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+      fullPrompt,
+    ];
 
-  try {
-    // The Claude Code SDK `query` function returns an async iterable of messages.
-    const conversation = query({
-      prompt: fullPrompt,
-      systemPrompt,
-      options: {
-        cwd: projectPath,
-        allowedTools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
-        maxTurns: 10,
-      },
+    const child = spawn(claudePath, args, {
+      cwd: projectPath,
+      env: { ...env, CLAUDECODE: '' }, // Avoid nested session check
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    for await (const message of conversation) {
-      if (message.type === 'text') {
-        responseText += message.content;
-        onEvent({ type: 'text', content: message.content });
-      } else if (message.type === 'tool_use') {
-        onEvent({
-          type: 'tool_use',
-          tool: message.tool,
-          input: message.input,
-        });
+    let responseText = '';
+    const changes = [];
+    let buffer = '';
 
-        // Track file modifications.
-        if (message.tool === 'Edit' || message.tool === 'Write') {
-          const filePath = message.input?.file_path || message.input?.path || '';
-          changes.push({
-            file: filePath,
-            action: message.tool === 'Write' ? 'write' : 'edit',
-            preview: message.input?.new_string || message.input?.content || null,
-            input: message.input,
-          });
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString();
+      // Process complete lines
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          processStreamMessage(msg, { onEvent, responseText: (t) => { responseText += t; }, changes });
+        } catch {
+          // Not valid JSON, skip
         }
-      } else if (message.type === 'tool_result') {
-        onEvent({
-          type: 'tool_result',
-          tool: message.tool,
-          output: message.output,
-        });
-      } else if (message.type === 'error') {
-        onEvent({ type: 'error', error: message.error });
+      }
+    });
+
+    child.stderr.on('data', (d) => {
+      const err = d.toString().trim();
+      if (err) onEvent({ type: 'error', error: err });
+    });
+
+    child.on('close', (code) => {
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        try {
+          const msg = JSON.parse(buffer);
+          processStreamMessage(msg, { onEvent, responseText: (t) => { responseText += t; }, changes });
+        } catch {}
+      }
+
+      if (code !== 0 && !responseText) {
+        reject(new Error(`Claude CLI exited with code ${code}`));
+      } else {
+        resolve({ response: responseText, changes });
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
+function processStreamMessage(msg, { onEvent, responseText, changes }) {
+  // stream-json format: each line is a JSON message
+  if (msg.type === 'assistant' && msg.message) {
+    // Full message block
+    const content = msg.message.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'text') {
+          responseText(block.text);
+          onEvent({ type: 'text', content: block.text });
+        } else if (block.type === 'tool_use') {
+          onEvent({ type: 'tool_use', tool: block.name, input: block.input });
+          if (block.name === 'Edit' || block.name === 'Write') {
+            changes.push({
+              file: block.input?.file_path || block.input?.path || '',
+              action: block.name === 'Write' ? 'write' : 'edit',
+              preview: block.input?.new_string || block.input?.content || null,
+              input: block.input,
+            });
+          }
+        }
       }
     }
-  } catch (err) {
-    onEvent({ type: 'error', error: err.message });
-    throw err;
+  } else if (msg.type === 'content_block_delta') {
+    if (msg.delta?.type === 'text_delta') {
+      responseText(msg.delta.text);
+      onEvent({ type: 'text', content: msg.delta.text });
+    }
+  } else if (msg.type === 'result') {
+    // Final result message
+    if (msg.result) {
+      responseText(msg.result);
+      onEvent({ type: 'text', content: msg.result });
+    }
   }
-
-  return { response: responseText, changes };
 }
 
 // ── System prompt builder ───────────────────────────────────────────────────────
@@ -324,10 +335,6 @@ Important:
 
 // ── Sandbox helpers ─────────────────────────────────────────────────────────────
 
-/**
- * Apply changes to a sandbox directory (mirror of the project).
- * This lets the user preview before committing.
- */
 async function applySandboxChanges(sandboxDir, projectPath, changes) {
   for (const change of changes) {
     if (!change.file) continue;
@@ -339,20 +346,15 @@ async function applySandboxChanges(sandboxDir, projectPath, changes) {
     const sandboxFile = join(sandboxDir, relativePath);
     const originalFile = join(projectPath, relativePath);
 
-    // Ensure the sandbox directory exists.
     await mkdir(dirname(sandboxFile), { recursive: true });
 
     if (change.action === 'write') {
-      // Write the new content directly.
       await writeFile(sandboxFile, change.input?.content || '', 'utf-8');
     } else if (change.action === 'edit') {
-      // Read the original, apply the edit, write to sandbox.
       let content = '';
       try {
         content = await readFile(originalFile, 'utf-8');
-      } catch {
-        // File might not exist yet.
-      }
+      } catch {}
 
       if (change.input?.old_string && change.input?.new_string) {
         content = content.replace(change.input.old_string, change.input.new_string);
@@ -363,9 +365,6 @@ async function applySandboxChanges(sandboxDir, projectPath, changes) {
   }
 }
 
-/**
- * Apply accepted changes from the sandbox to the real project.
- */
 async function applyChangesToProject(projectPath, changes) {
   for (const change of changes) {
     if (!change.file) continue;
@@ -384,9 +383,7 @@ async function applyChangesToProject(projectPath, changes) {
       let content = '';
       try {
         content = await readFile(targetFile, 'utf-8');
-      } catch {
-        // File may not exist.
-      }
+      } catch {}
 
       if (change.input?.old_string && change.input?.new_string) {
         content = content.replace(change.input.old_string, change.input.new_string);
@@ -397,13 +394,8 @@ async function applyChangesToProject(projectPath, changes) {
   }
 }
 
-/**
- * Remove the sandbox directory.
- */
 async function cleanSandbox(sandboxDir) {
   try {
     await rm(sandboxDir, { recursive: true, force: true });
-  } catch {
-    // Ignore — sandbox may not exist.
-  }
+  } catch {}
 }
