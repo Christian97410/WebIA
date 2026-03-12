@@ -1,17 +1,15 @@
 import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
-import { createRequire } from 'module';
 
-// Try to load node-pty for proper terminal emulation
+// Try to load node-pty for proper terminal emulation (lazy loaded)
 let pty = null;
 let ptyChecked = false;
-const _require = createRequire(import.meta.url);
 function getPty() {
   if (ptyChecked) return pty;
   ptyChecked = true;
   try {
-    pty = _require('node-pty');
+    pty = require('node-pty');
   } catch {
     // node-pty not available — fall back to basic pipes
   }
