@@ -3205,6 +3205,13 @@ export class EditorView {
             toolEl.appendChild(contentWrap);
             toolGroup.appendChild(toolEl);
 
+            // Force reflow so ::before line appears (WebKit/:has() timing issue)
+            if (toolGroup.children.length > 1) {
+              toolGroup.style.display = 'none';
+              toolGroup.offsetHeight; // force reflow
+              toolGroup.style.display = '';
+            }
+
             // Add detail line (bash command, search context, etc.)
             if (detail) {
               const detailEl = document.createElement('div');
