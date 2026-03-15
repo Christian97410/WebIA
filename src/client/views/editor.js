@@ -152,6 +152,15 @@ export class EditorView {
         h('button', { className: 'topbar-btn', onClick: () => this.togglePreview() }, '\u25B6'),
         (() => {
           const btn = h('button', {
+            className: 'topbar-btn topbar-btn--supabase',
+            onClick: () => this.showSupabasePanel(),
+            title: 'Supabase',
+          });
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 109 113" fill="none"><path d="M63.7 110.3c-2.6 3.3-8.1.7-7.8-3.6l3.3-44.4H104c4.8 0 7.4 5.6 4.3 9.2L63.7 110.3Z" fill="currentColor" opacity="0.7"/><path d="M45.3 2.7c2.6-3.3 8.1-.7 7.8 3.6l-1.7 44.4H5c-4.8 0-7.4-5.6-4.3-9.2L45.3 2.7Z" fill="currentColor"/></svg>';
+          return btn;
+        })(),
+        (() => {
+          const btn = h('button', {
             className: 'topbar-btn topbar-btn--git',
             onClick: () => this.showGitPanel(),
             title: 'Git',
@@ -475,14 +484,37 @@ export class EditorView {
     this.chatMessages = h('div', { className: 'chat-messages' });
     this.chatContent.appendChild(this.chatMessages);
 
-    // Delegated click for file links in chat
+    // Delegated click for file links and copy buttons in chat
     this.chatMessages.addEventListener('click', (e) => {
+      // File links
       const link = e.target.closest('.chat-file-link');
-      if (!link) return;
-      e.preventDefault();
-      const filePath = link.dataset.path;
-      const line = link.dataset.line;
-      if (filePath) this._openFileFromChat(filePath, line ? parseInt(line) : 0);
+      if (link) {
+        e.preventDefault();
+        const filePath = link.dataset.path;
+        const line = link.dataset.line;
+        if (filePath) this._openFileFromChat(filePath, line ? parseInt(line) : 0);
+        return;
+      }
+      // Copy buttons
+      const copyBtn = e.target.closest('.chat-copy-btn');
+      if (copyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        let text = copyBtn.dataset.copy;
+        if (!text) {
+          // For code blocks, get the sibling <code> text
+          const code = copyBtn.closest('.chat-code-block')?.querySelector('code');
+          if (code) text = code.textContent;
+        }
+        if (text) {
+          navigator.clipboard.writeText(text).then(() => {
+            const svg = copyBtn.querySelector('svg');
+            const origHTML = svg.outerHTML;
+            copyBtn.innerHTML = `<svg width="${svg.getAttribute('width')}" height="${svg.getAttribute('height')}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
+            setTimeout(() => { copyBtn.innerHTML = origHTML; }, 1500);
+          });
+        }
+      }
     });
 
     // Context bar (shows selected element info)
@@ -2794,7 +2826,7 @@ export class EditorView {
     const codeBlocks = [];
     let safe = text.replace(/```(\w*)\s*\n([\s\S]*?)```/g, (_m, _lang, code) => {
       const idx = codeBlocks.length;
-      codeBlocks.push(`<pre class="chat-code-block"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+      codeBlocks.push(`<pre class="chat-code-block"><button class="chat-copy-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
       return `\n%%CODEBLOCK_${idx}%%\n`;
     });
 
@@ -3143,7 +3175,9 @@ export class EditorView {
         Edit: 'edit', Replace: 'edit',
         Write: 'write',
         Glob: 'search', Grep: 'search', Search: 'search',
+        Bash: 'bash', Agent: 'agent',
       };
+      let lastToolEl = null; // Track the last tool element for tool_result pairing
 
       // Read stream
       while (true) {
@@ -3194,6 +3228,7 @@ export class EditorView {
               textAccumulator = '';
             }
 
+            const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const toolName = data.tool || data.name || '';
             const toolBase = toolName.split('/').pop().split('.').shift();
             const dotType = toolTypeMap[toolBase] || toolTypeMap[toolName] || 'search';
@@ -3202,7 +3237,6 @@ export class EditorView {
             // Get or create tool group (connected dots with vertical line)
             const allGroups = aiMsg.querySelectorAll('.chat-tool-group');
             let toolGroup = allGroups.length ? allGroups[allGroups.length - 1] : null;
-            // Break group only if there's real content (text, thinking block) between last group and end
             let shouldBreak = !toolGroup;
             if (toolGroup) {
               let sib = toolGroup.nextElementSibling;
@@ -3217,66 +3251,151 @@ export class EditorView {
               aiMsg.appendChild(toolGroup);
             }
 
-            // Shorten path to filename + line info (like VS Code)
-            const actualPath = input.file_path || input.path || data.file_path || data.path || '';
-            const shortPath = actualPath ? actualPath.split('/').pop() : '';
-            let lineInfo = '';
-            if (input.offset || input.limit) {
-              const start = input.offset || 1;
-              const end = input.limit ? start + input.limit - 1 : '';
-              lineInfo = end ? ` (lines ${start}-${end})` : ` (line ${start})`;
-            }
-
-            // Build tool line label + detail
-            let toolLabel = shortPath + lineInfo;
-            let detail = '';
-            if (toolBase === 'Bash' || toolName === 'Bash') {
-              toolLabel = '';
-              detail = input.command || '';
-            } else if (toolBase === 'Grep' || toolName === 'Grep') {
-              toolLabel = input.pattern ? `"${input.pattern}"` : '';
-              detail = shortPath ? `in ${shortPath}` : '';
-            } else if (toolBase === 'Glob' || toolName === 'Glob') {
-              toolLabel = input.pattern || shortPath || '';
-            }
-
             const toolEl = document.createElement('div');
             toolEl.className = 'chat-tool-use';
             const contentWrap = document.createElement('div');
             contentWrap.className = 'chat-tool-content';
-            contentWrap.innerHTML =
-              `<div class="chat-tool-header"><span class="chat-tool-name">${toolBase || toolName}</span>` +
-              `<span class="chat-tool-path">${toolLabel}</span></div>`;
-            toolEl.innerHTML = `<span class="chat-tool-dot chat-tool-dot--${dotType}"></span>`;
-            toolEl.appendChild(contentWrap);
-            toolGroup.appendChild(toolEl);
 
-            updateGroupLine(toolGroup);
+            // ── Bash: code block with IN label ──
+            if (toolBase === 'Bash' || toolName === 'Bash') {
+              const cmd = input.command || '';
+              contentWrap.innerHTML = `<div class="chat-tool-header"><span class="chat-tool-name">Bash</span></div>`;
+              const inBlock = document.createElement('div');
+              inBlock.className = 'chat-tool-io';
+              inBlock.innerHTML =
+                `<span class="chat-io-label">IN</span>` +
+                `<pre class="chat-code-block"><button class="chat-copy-btn" data-copy="${esc(cmd).replace(/"/g, '&quot;')}" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${esc(cmd)}</code></pre>`;
+              contentWrap.appendChild(inBlock);
 
-            // Add detail line (bash command, search context, etc.)
-            if (detail) {
-              const detailEl = document.createElement('div');
-              detailEl.className = 'chat-tool-detail';
-              detailEl.textContent = detail.length > 120 ? detail.slice(0, 120) + '...' : detail;
-              contentWrap.appendChild(detailEl);
-            }
+            // ── Agent: header + prompt ──
+            } else if (toolBase === 'Agent' || toolName === 'Agent') {
+              const desc = input.description || input.prompt?.slice(0, 60) || 'Sub-agent';
+              const prompt = input.prompt || '';
+              contentWrap.innerHTML = `<div class="chat-tool-header"><span class="chat-tool-name">Agent:</span> <span class="chat-tool-path">${esc(desc)}</span></div>`;
+              if (prompt) {
+                const inBlock = document.createElement('div');
+                inBlock.className = 'chat-tool-io';
+                const truncated = prompt.length > 300 ? prompt.slice(0, 300) + '...' : prompt;
+                inBlock.innerHTML =
+                  `<span class="chat-io-label">IN</span>` +
+                  `<pre class="chat-code-block"><button class="chat-copy-btn" data-copy="${esc(prompt).replace(/"/g, '&quot;')}" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${esc(truncated)}</code></pre>`;
+                contentWrap.appendChild(inBlock);
+              }
 
-            // Add code preview for Edit/Write
-            if ((toolBase === 'Edit' || toolBase === 'Write') && (input.new_string || input.content)) {
-              const preview = input.new_string || input.content || '';
-              if (preview.length > 0) {
+            // ── Edit: diff view ──
+            } else if (toolBase === 'Edit' || toolName === 'Edit') {
+              const actualPath = input.file_path || input.path || '';
+              const shortPath = actualPath ? actualPath.split('/').pop() : '';
+              contentWrap.innerHTML = `<div class="chat-tool-header"><span class="chat-tool-name">Edit</span> <span class="chat-tool-path">${esc(shortPath)}</span></div>`;
+
+              if (input.old_string || input.new_string) {
+                const oldStr = input.old_string || '';
+                const newStr = input.new_string || '';
+                const oldLines = oldStr ? oldStr.split('\n') : [];
+                const newLines = newStr ? newStr.split('\n') : [];
+                const added = newLines.filter(l => !oldLines.includes(l)).length;
+                const removed = oldLines.filter(l => !newLines.includes(l)).length;
+
+                let summary = '';
+                if (removed && added) summary = `${removed} removed, ${added} added`;
+                else if (removed) summary = `Removed ${removed} line${removed > 1 ? 's' : ''}`;
+                else if (added) summary = `Added ${added} line${added > 1 ? 's' : ''}`;
+                else summary = 'Changed';
+
+                const diffEl = document.createElement('details');
+                diffEl.className = 'chat-tool-diff';
+                let diffHTML = `<summary>${summary}</summary><div class="chat-diff-content">`;
+                for (const line of oldLines) {
+                  if (!newLines.includes(line)) {
+                    diffHTML += `<div class="chat-diff-removed">${esc(line)}</div>`;
+                  } else {
+                    diffHTML += `<div class="chat-diff-ctx">${esc(line)}</div>`;
+                  }
+                }
+                for (const line of newLines) {
+                  if (!oldLines.includes(line)) {
+                    diffHTML += `<div class="chat-diff-added">${esc(line)}</div>`;
+                  }
+                }
+                diffHTML += '</div>';
+                diffEl.innerHTML = diffHTML;
+                contentWrap.appendChild(diffEl);
+              }
+
+            // ── Write: code preview ──
+            } else if (toolBase === 'Write' || toolName === 'Write') {
+              const actualPath = input.file_path || input.path || '';
+              const shortPath = actualPath ? actualPath.split('/').pop() : '';
+              contentWrap.innerHTML = `<div class="chat-tool-header"><span class="chat-tool-name">Write</span> <span class="chat-tool-path">${esc(shortPath)}</span></div>`;
+              const content = input.content || '';
+              if (content) {
                 const previewEl = document.createElement('details');
                 previewEl.className = 'chat-tool-code-preview';
-                const previewLines = preview.split('\n').length;
+                const previewLines = content.split('\n').length;
                 previewEl.innerHTML =
-                  `<summary>${previewLines} line${previewLines > 1 ? 's' : ''} changed</summary>` +
-                  `<pre class="chat-code-block">${preview.length > 500 ? preview.slice(0, 500) + '\n...' : preview}</pre>`;
+                  `<summary>${previewLines} line${previewLines > 1 ? 's' : ''}</summary>` +
+                  `<pre class="chat-code-block"><button class="chat-copy-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${esc(content.length > 500 ? content.slice(0, 500) + '\n...' : content)}</code></pre>`;
                 contentWrap.appendChild(previewEl);
+              }
+
+            // ── Default: Read, Grep, Glob, etc. ──
+            } else {
+              const actualPath = input.file_path || input.path || data.file_path || data.path || '';
+              const shortPath = actualPath ? actualPath.split('/').pop() : '';
+              let lineInfo = '';
+              if (input.offset || input.limit) {
+                const start = input.offset || 1;
+                const end = input.limit ? start + input.limit - 1 : '';
+                lineInfo = end ? ` (lines ${start}-${end})` : ` (line ${start})`;
+              }
+              let toolLabel = shortPath + lineInfo;
+              let detail = '';
+              if (toolBase === 'Grep' || toolName === 'Grep') {
+                toolLabel = input.pattern ? `"${input.pattern}"` : '';
+                detail = shortPath ? `in ${shortPath}` : '';
+              } else if (toolBase === 'Glob' || toolName === 'Glob') {
+                toolLabel = input.pattern || shortPath || '';
+              }
+              contentWrap.innerHTML =
+                `<div class="chat-tool-header"><span class="chat-tool-name">${esc(toolBase || toolName)}</span>` +
+                `<span class="chat-tool-path">${esc(toolLabel)}</span></div>`;
+              if (detail) {
+                const detailEl = document.createElement('div');
+                detailEl.className = 'chat-tool-detail';
+                const detailText = detail.length > 120 ? detail.slice(0, 120) + '...' : detail;
+                detailEl.innerHTML = `<span class="chat-detail-text">${esc(detailText)}</span><button class="chat-copy-btn chat-copy-btn--inline" data-copy="${esc(detail).replace(/"/g,'&quot;')}" title="Copy"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button>`;
+                contentWrap.appendChild(detailEl);
               }
             }
 
+            toolEl.innerHTML = `<span class="chat-tool-dot chat-tool-dot--${dotType}"></span>`;
+            toolEl.appendChild(contentWrap);
+            toolGroup.appendChild(toolEl);
+            lastToolEl = toolEl;
+
+            updateGroupLine(toolGroup);
+
             moveThinkingToBottom();
             scrollToBottom();
+          } else if (data.type === 'tool_result') {
+            // Append output to the last tool element (Bash OUT, Agent result, etc.)
+            if (lastToolEl) {
+              const resultContent = data.content || '';
+              if (resultContent.trim()) {
+                const wrap = lastToolEl.querySelector('.chat-tool-content');
+                if (wrap) {
+                  const escR = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  const outBlock = document.createElement('div');
+                  outBlock.className = 'chat-tool-io';
+                  const truncated = resultContent.length > 800 ? resultContent.slice(0, 800) + '\n...' : resultContent;
+                  outBlock.innerHTML =
+                    `<span class="chat-io-label">OUT</span>` +
+                    `<pre class="chat-code-block chat-code-block--out"><button class="chat-copy-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${escR(truncated)}</code></pre>`;
+                  wrap.appendChild(outBlock);
+                  scrollToBottom();
+                }
+              }
+            }
           } else if (data.type === 'thinking') {
             moveThinkingToBottom();
             // Accumulate thinking chunks into a single dropdown
@@ -4998,36 +5117,14 @@ export class EditorView {
     panel.appendChild(tabs);
     panel.appendChild(tabContent);
 
-    // Sync bar (push/pull)
+    // Remote info bar (display only — commit & push handles sync)
     let syncBarEl = null;
     const renderSyncBar = () => {
       if (syncBarEl) syncBarEl.remove();
       if (!status.remote) return;
-      const syncInfo = h('div', { className: 'git-sync-info' }, status.remote.replace('https://github.com/', '').replace('.git', ''));
+      const repoName = status.remote.replace('https://github.com/', '').replace('.git', '');
       syncBarEl = h('div', { className: 'git-sync-bar' },
-        syncInfo,
-        h('div', { className: 'git-sync-badges' },
-          status.ahead ? h('span', { className: 'git-sync-badge' }, `${status.ahead}\u2191`) : null,
-          status.behind ? h('span', { className: 'git-sync-badge' }, `${status.behind}\u2193`) : null,
-        ),
-        h('button', {
-          className: 'git-btn git-btn-secondary',
-          onClick: async (e) => {
-            e.target.textContent = 'Pulling...';
-            e.target.disabled = true;
-            try { await api.post('/api/git/pull', { dir }); } catch (err) { syncInfo.textContent = err.message; }
-            await refreshPanel();
-          },
-        }, 'Pull'),
-        h('button', {
-          className: 'git-btn git-btn-secondary',
-          onClick: async (e) => {
-            e.target.textContent = 'Pushing...';
-            e.target.disabled = true;
-            try { await api.post('/api/git/push', { dir }); } catch (err) { syncInfo.textContent = err.message; }
-            await refreshPanel();
-          },
-        }, 'Push'),
+        h('div', { className: 'git-sync-info' }, repoName),
       );
       panel.appendChild(syncBarEl);
     };
@@ -5061,6 +5158,7 @@ export class EditorView {
     }
 
     // Commit section
+    const hasRemote = !!status.remote;
     const commitInput = h('textarea', {
       className: 'git-commit-input',
       placeholder: 'Commit message...',
@@ -5068,49 +5166,43 @@ export class EditorView {
     });
 
     const statusMsg = h('div', { className: 'git-status-msg' });
+    const btnLabel = hasRemote ? 'Commit & Push' : 'Commit';
     const commitBtn = h('button', {
       className: 'git-btn git-btn-primary',
       onClick: async () => {
         const msg = commitInput.value.trim();
         if (!msg) { statusMsg.textContent = 'Enter a commit message'; return; }
         commitBtn.disabled = true;
-        commitBtn.textContent = 'Committing...';
         try {
-          const result = await api.post('/api/git/commit', { dir, message: msg });
-          // Replace commit section with success + push prompt
-          commitSection.innerHTML = '';
-          const successRow = h('div', { className: 'git-commit-actions' },
-            h('div', { className: 'git-status-msg' }, `Committed ${result.commit}`),
-          );
-          if (status.remote) {
-            const pushBtn = h('button', {
-              className: 'git-btn git-btn-primary',
-              onClick: async () => {
-                pushBtn.disabled = true;
-                pushBtn.textContent = 'Pushing...';
-                try {
-                  await api.post('/api/git/push', { dir });
-                  pushBtn.textContent = 'Pushed';
-                  setTimeout(() => refreshPanel(), 500);
-                } catch (err) {
-                  pushBtn.textContent = 'Push';
-                  pushBtn.disabled = false;
-                  successRow.querySelector('.git-status-msg').textContent = err.message;
-                }
-              },
-            }, 'Push');
-            successRow.appendChild(pushBtn);
-          } else {
-            setTimeout(() => refreshPanel(), 600);
+          // Auto-pull if behind remote
+          if (hasRemote && status.behind > 0) {
+            commitBtn.textContent = 'Syncing...';
+            await api.post('/api/git/pull', { dir });
           }
-          commitSection.appendChild(successRow);
+
+          // Commit
+          commitBtn.textContent = 'Committing...';
+          const result = await api.post('/api/git/commit', { dir, message: msg });
+
+          // Auto-push if remote exists
+          if (hasRemote) {
+            commitBtn.textContent = 'Pushing...';
+            await api.post('/api/git/push', { dir });
+          }
+
+          // Success
+          commitSection.innerHTML = '';
+          commitSection.appendChild(h('div', { className: 'git-commit-actions' },
+            h('div', { className: 'git-status-msg' }, hasRemote ? `Committed & pushed ${result.commit}` : `Committed ${result.commit}`),
+          ));
+          setTimeout(() => refreshPanel(), 600);
         } catch (err) {
           statusMsg.textContent = err.message;
           commitBtn.disabled = false;
-          commitBtn.textContent = 'Commit';
+          commitBtn.textContent = btnLabel;
         }
       },
-    }, 'Commit');
+    }, btnLabel);
 
     const commitSection = h('div', { className: 'git-commit-section' },
       commitInput,
@@ -5253,6 +5345,391 @@ export class EditorView {
         h('div', { style: { fontSize: '12px', fontFamily: "'SF Mono', 'Fira Code', monospace", color: 'var(--text-secondary)' } }, status.remote),
       ));
     }
+  }
+
+  // ── Supabase Panel ──
+
+  async showSupabasePanel() {
+    const dir = this.projectPath;
+    const q = (p) => `${p}${p.includes('?') ? '&' : '?'}dir=${encodeURIComponent(dir)}`;
+
+    // Overlay
+    const overlay = h('div', { className: 'sb-overlay' });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+    document.addEventListener('keydown', onKey);
+
+    const panel = h('div', { className: 'sb-panel' });
+
+    // Header
+    panel.appendChild(h('div', { className: 'sb-header' },
+      h('div', { className: 'sb-header-left' },
+        h('svg', { innerHTML: '<path d="M63.7 110.3c-2.6 3.3-8.1.7-7.8-3.6l3.3-44.4H104c4.8 0 7.4 5.6 4.3 9.2L63.7 110.3Z" fill="currentColor" opacity="0.7"/><path d="M45.3 2.7c2.6-3.3 8.1-.7 7.8 3.6l-1.7 44.4H5c-4.8 0-7.4-5.6-4.3-9.2L45.3 2.7Z" fill="currentColor"/>', width: '14', height: '14', viewBox: '0 0 109 113', fill: 'none', style: 'flex-shrink:0' }),
+        h('span', { className: 'sb-header-title' }, 'Supabase'),
+      ),
+      h('button', { className: 'sb-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    const loadingEl = h('div', { className: 'sb-loading' }, 'Loading...');
+    panel.appendChild(loadingEl);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    // Fetch auth + link status
+    let authInfo, linkInfo;
+    try {
+      [authInfo, linkInfo] = await Promise.all([
+        api.get('/api/supabase/auth'),
+        api.get(q('/api/supabase/link')),
+      ]);
+    } catch (err) {
+      loadingEl.textContent = 'Failed to connect';
+      return;
+    }
+
+    loadingEl.remove();
+
+    if (!authInfo.authenticated) {
+      this._renderSbAuth(panel, overlay);
+      return;
+    }
+
+    if (!linkInfo.linked) {
+      await this._renderSbProjectPicker(panel, overlay, dir);
+      return;
+    }
+
+    // Linked — show tabs
+    await this._renderSbLinked(panel, overlay, dir, linkInfo);
+  }
+
+  _renderSbAuth(panel, overlay) {
+    const section = h('div', { className: 'sb-auth-section' });
+    section.appendChild(h('div', { className: 'sb-section-title' }, 'Connect to Supabase'));
+    section.appendChild(h('div', { className: 'sb-hint' }, 'Enter your Personal Access Token from Supabase Dashboard > Account > Access Tokens.'));
+
+    const tokenInput = h('input', {
+      className: 'sb-input',
+      type: 'password',
+      placeholder: 'sbp_...',
+    });
+    const statusMsg = h('div', { className: 'sb-status-msg' });
+
+    section.appendChild(tokenInput);
+    section.appendChild(h('div', { className: 'sb-actions' },
+      statusMsg,
+      h('button', {
+        className: 'sb-btn sb-btn-primary',
+        onClick: async (e) => {
+          const token = tokenInput.value.trim();
+          if (!token) return;
+          e.target.disabled = true;
+          e.target.textContent = 'Connecting...';
+          try {
+            await api.post('/api/supabase/auth', { token });
+            overlay.remove();
+            this.showSupabasePanel();
+          } catch (err) {
+            statusMsg.textContent = err.message || 'Invalid token';
+            e.target.disabled = false;
+            e.target.textContent = 'Connect';
+          }
+        },
+      }, 'Connect'),
+    ));
+
+    panel.appendChild(section);
+  }
+
+  async _renderSbProjectPicker(panel, overlay, dir) {
+    const section = h('div', { className: 'sb-auth-section' });
+    section.appendChild(h('div', { className: 'sb-section-title' }, 'Link a project'));
+    section.appendChild(h('div', { className: 'sb-hint' }, 'Select a Supabase project to link to this workspace.'));
+
+    const statusMsg = h('div', { className: 'sb-status-msg' });
+    const listEl = h('div', { className: 'sb-project-list' });
+
+    try {
+      const projects = await api.get('/api/supabase/projects');
+      if (projects.length === 0) {
+        listEl.appendChild(h('div', { className: 'sb-empty' }, 'No projects found'));
+      } else {
+        for (const p of projects) {
+          const statusDot = p.status === 'ACTIVE_HEALTHY' ? 'active' : 'inactive';
+          const item = h('div', {
+            className: 'sb-project-item',
+            onClick: async () => {
+              item.classList.add('loading');
+              try {
+                await api.post('/api/supabase/link', {
+                  dir,
+                  projectRef: p.ref,
+                  projectName: p.name,
+                });
+                overlay.remove();
+                this.showSupabasePanel();
+              } catch (err) {
+                statusMsg.textContent = err.message;
+                item.classList.remove('loading');
+              }
+            },
+          },
+            h('div', { className: `sb-project-dot ${statusDot}` }),
+            h('div', { className: 'sb-project-info' },
+              h('div', { className: 'sb-project-name' }, p.name),
+              h('div', { className: 'sb-project-meta' }, `${p.region} · ${p.ref}`),
+            ),
+          );
+          listEl.appendChild(item);
+        }
+      }
+    } catch (err) {
+      listEl.appendChild(h('div', { className: 'sb-empty' }, 'Failed to load projects'));
+    }
+
+    section.appendChild(listEl);
+    section.appendChild(statusMsg);
+
+    // Sign out option
+    section.appendChild(h('div', { className: 'sb-footer' },
+      h('button', {
+        className: 'sb-btn sb-btn-secondary',
+        onClick: async () => {
+          await api.del('/api/supabase/auth');
+          overlay.remove();
+          this.showSupabasePanel();
+        },
+      }, 'Sign out'),
+    ));
+
+    panel.appendChild(section);
+  }
+
+  async _renderSbLinked(panel, overlay, dir, linkInfo) {
+    // Project info bar
+    panel.appendChild(h('div', { className: 'sb-project-bar' },
+      h('div', { className: 'sb-project-dot active' }),
+      h('span', { className: 'sb-project-bar-name' }, linkInfo.projectName || linkInfo.projectRef),
+      h('span', { className: 'sb-project-bar-ref' }, linkInfo.projectRef),
+    ));
+
+    // Tabs
+    const tabContent = h('div', { className: 'sb-tab-content' });
+    let activeTab = 'schema';
+
+    const renderTab = async (tab) => {
+      activeTab = tab;
+      tabs.querySelectorAll('.sb-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+      tabContent.innerHTML = '';
+
+      if (tab === 'schema') {
+        await this._renderSbSchema(tabContent, dir);
+      } else if (tab === 'actions') {
+        await this._renderSbActions(tabContent, dir, linkInfo);
+      } else if (tab === 'settings') {
+        this._renderSbSettings(tabContent, dir, linkInfo, overlay);
+      }
+    };
+
+    const tabs = h('div', { className: 'sb-tabs' },
+      h('div', { className: 'sb-tab active', dataset: { tab: 'schema' }, onClick: () => renderTab('schema') }, 'Schema'),
+      h('div', { className: 'sb-tab', dataset: { tab: 'actions' }, onClick: () => renderTab('actions') }, 'Actions'),
+      h('div', { className: 'sb-tab', dataset: { tab: 'settings' }, onClick: () => renderTab('settings') }, 'Settings'),
+    );
+    panel.appendChild(tabs);
+    panel.appendChild(tabContent);
+
+    renderTab('schema');
+  }
+
+  async _renderSbSchema(container, dir) {
+    const loadingEl = h('div', { className: 'sb-loading' }, 'Loading schema...');
+    container.appendChild(loadingEl);
+
+    try {
+      const data = await api.get(`/api/supabase/schema?dir=${encodeURIComponent(dir)}`);
+      loadingEl.remove();
+
+      if (!data.tables || data.tables.length === 0) {
+        container.appendChild(h('div', { className: 'sb-empty' }, 'No tables in public schema'));
+        return;
+      }
+
+      for (const table of data.tables) {
+        const tableEl = h('div', { className: 'sb-table' });
+        const header = h('div', {
+          className: 'sb-table-header',
+          onClick: () => {
+            tableEl.classList.toggle('collapsed');
+          },
+        },
+          h('span', { className: 'sb-table-chevron' }, '\u25B6'),
+          h('span', { className: 'sb-table-name' }, table.name),
+          h('span', { className: 'sb-table-count' }, `${table.columns.length} cols`),
+        );
+        tableEl.appendChild(header);
+
+        const cols = h('div', { className: 'sb-table-columns' });
+        for (const col of table.columns) {
+          cols.appendChild(h('div', { className: 'sb-column' },
+            h('span', { className: 'sb-column-name' }, col.name),
+            h('span', { className: 'sb-column-type' }, col.type),
+            col.nullable ? h('span', { className: 'sb-column-nullable' }, '?') : null,
+          ));
+        }
+        tableEl.appendChild(cols);
+        container.appendChild(tableEl);
+      }
+    } catch (err) {
+      loadingEl.textContent = err.message || 'Failed to load schema';
+    }
+  }
+
+  async _renderSbActions(container, dir, linkInfo) {
+    // Push migrations
+    container.appendChild(h('div', { className: 'sb-section-title' }, 'Database'));
+
+    const migStatus = h('div', { className: 'sb-status-msg' });
+    container.appendChild(h('div', { className: 'sb-action-row' },
+      h('div', { className: 'sb-action-info' },
+        h('div', { className: 'sb-action-name' }, 'Push migrations'),
+        h('div', { className: 'sb-action-desc' }, 'Run supabase/migrations/*.sql on the remote database'),
+      ),
+      h('button', {
+        className: 'sb-btn sb-btn-primary',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Pushing...';
+          try {
+            const result = await api.post('/api/supabase/migrations/push', { dir });
+            const failed = result.results?.filter(r => r.status === 'error') || [];
+            if (failed.length > 0) {
+              migStatus.textContent = `${result.applied} applied, ${failed.length} failed: ${failed[0].error}`;
+            } else {
+              migStatus.textContent = `${result.applied} migration${result.applied !== 1 ? 's' : ''} applied`;
+            }
+          } catch (err) {
+            migStatus.textContent = err.message;
+          }
+          e.target.disabled = false;
+          e.target.textContent = 'Push';
+        },
+      }, 'Push'),
+    ));
+    container.appendChild(migStatus);
+
+    // Generate types
+    container.appendChild(h('div', { className: 'sb-section-title' }, 'Types'));
+
+    const typeStatus = h('div', { className: 'sb-status-msg' });
+    container.appendChild(h('div', { className: 'sb-action-row' },
+      h('div', { className: 'sb-action-info' },
+        h('div', { className: 'sb-action-name' }, 'Generate TypeScript types'),
+        h('div', { className: 'sb-action-desc' }, 'Create src/types/supabase.ts from your database schema'),
+      ),
+      h('button', {
+        className: 'sb-btn sb-btn-primary',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Generating...';
+          try {
+            const result = await api.post('/api/supabase/types/write', { dir });
+            typeStatus.textContent = `Written to ${result.path}`;
+          } catch (err) {
+            typeStatus.textContent = err.message;
+          }
+          e.target.disabled = false;
+          e.target.textContent = 'Generate';
+        },
+      }, 'Generate'),
+    ));
+    container.appendChild(typeStatus);
+
+    // Deploy functions
+    container.appendChild(h('div', { className: 'sb-section-title' }, 'Edge Functions'));
+
+    const fnStatus = h('div', { className: 'sb-status-msg' });
+    const fnList = h('div', { className: 'sb-fn-list' });
+
+    // Check if supabase/functions/ exists
+    try {
+      const files = await api.get(`/api/files/list?path=${encodeURIComponent(dir + '/supabase/functions')}`);
+      if (files && files.length > 0) {
+        const dirs = files.filter(f => f.type === 'directory');
+        for (const fn of dirs) {
+          fnList.appendChild(h('div', { className: 'sb-action-row' },
+            h('div', { className: 'sb-action-info' },
+              h('div', { className: 'sb-action-name' }, fn.name),
+            ),
+            h('button', {
+              className: 'sb-btn sb-btn-secondary',
+              onClick: async (e) => {
+                e.target.disabled = true;
+                e.target.textContent = 'Deploying...';
+                try {
+                  await api.post('/api/supabase/functions/deploy', { dir, slug: fn.name });
+                  fnStatus.textContent = `Deployed ${fn.name}`;
+                } catch (err) {
+                  fnStatus.textContent = err.message;
+                }
+                e.target.disabled = false;
+                e.target.textContent = 'Deploy';
+              },
+            }, 'Deploy'),
+          ));
+        }
+      } else {
+        fnList.appendChild(h('div', { className: 'sb-hint' }, 'No functions in supabase/functions/'));
+      }
+    } catch {
+      fnList.appendChild(h('div', { className: 'sb-hint' }, 'No supabase/functions/ directory'));
+    }
+
+    container.appendChild(fnList);
+    container.appendChild(fnStatus);
+  }
+
+  _renderSbSettings(container, dir, linkInfo, overlay) {
+    // Project info
+    container.appendChild(h('div', { className: 'sb-section-title' }, 'Linked project'));
+    container.appendChild(h('div', { className: 'sb-auth-section' },
+      h('div', { className: 'sb-setting-row' },
+        h('span', { className: 'sb-setting-label' }, 'Project'),
+        h('span', { className: 'sb-setting-value' }, linkInfo.projectName),
+      ),
+      h('div', { className: 'sb-setting-row' },
+        h('span', { className: 'sb-setting-label' }, 'Ref'),
+        h('span', { className: 'sb-setting-value mono' }, linkInfo.projectRef),
+      ),
+      h('div', { className: 'sb-setting-row' },
+        h('span', { className: 'sb-setting-label' }, 'URL'),
+        h('span', { className: 'sb-setting-value mono' }, linkInfo.url),
+      ),
+    ));
+
+    // Unlink
+    const statusMsg = h('div', { className: 'sb-status-msg' });
+    container.appendChild(h('div', { className: 'sb-auth-section' },
+      h('div', { className: 'sb-actions' },
+        h('button', {
+          className: 'sb-btn sb-btn-secondary',
+          onClick: async () => {
+            await api.del('/api/supabase/link', { dir });
+            overlay.remove();
+            this.showSupabasePanel();
+          },
+        }, 'Unlink project'),
+        h('button', {
+          className: 'sb-btn sb-btn-secondary',
+          onClick: async () => {
+            await api.del('/api/supabase/auth');
+            overlay.remove();
+            this.showSupabasePanel();
+          },
+        }, 'Sign out'),
+      ),
+      statusMsg,
+    ));
   }
 
   // Git branch

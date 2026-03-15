@@ -472,6 +472,14 @@ function processStreamMessage(msg, { onEvent, responseText, changes }) {
     if (msg.content_block?.type === 'thinking') {
       onEvent({ type: 'thinking', content: msg.content_block.thinking || '' });
     }
+  } else if (msg.type === 'tool_result') {
+    // Forward tool results to client (Bash output, etc.)
+    const content = msg.content || msg.output || '';
+    const toolName = msg.tool_name || msg.name || '';
+    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(b => b.text || '').join('') : JSON.stringify(content);
+    if (text) {
+      onEvent({ type: 'tool_result', tool: toolName, content: text, tool_use_id: msg.tool_use_id || '' });
+    }
   } else if (msg.type === 'result') {
     console.log('[AI-SDK] result:', JSON.stringify({ usage: msg.usage, cost: msg.total_cost_usd, session_id: msg.session_id, num_turns: msg.num_turns, is_error: msg.is_error, subtype: msg.subtype }, null, 2));
     onEvent({ type: 'done', usage: msg.usage || null, cost: msg.total_cost_usd || null });

@@ -101,8 +101,14 @@ export function setupWebSocket(wss) {
         }
 
         if (!usePty) {
-          // Fallback: basic pipes (no ANSI, no resize)
-          terminalProcess = spawn(shell, ['-i'], {
+          // Fallback: use `script` to allocate a real PTY without node-pty.
+          // macOS: script -q /dev/null <shell>
+          // Linux: script -qc <shell> /dev/null
+          const isLinux = platform() === 'linux';
+          const scriptArgs = isLinux
+            ? ['-qc', shell, '/dev/null']
+            : ['-q', '/dev/null', shell];
+          terminalProcess = spawn('script', scriptArgs, {
             cwd,
             env: shellEnv({ TERM: 'xterm-256color', LANG: 'en_US.UTF-8' }),
             stdio: ['pipe', 'pipe', 'pipe'],

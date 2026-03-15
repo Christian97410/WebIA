@@ -11,6 +11,7 @@ import { createGitRouter } from './routes/git.js';
 import { createAIRouter } from './routes/ai.js';
 import { createDevServerRouter } from './routes/devserver.js';
 import { createMediaRouter } from './routes/media.js';
+import { createSupabaseRouter } from './routes/supabase.js';
 import { setupWebSocket } from './ws.js';
 
 // In ESM: derive __filename/__dirname from import.meta.url
@@ -65,12 +66,15 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   // Path guard: inject current project dir into request for file containment
   app.use('/api/files', (req, res, next) => { req._projectDir = state.currentProject; next(); }, createFileRouter());
-  app.use('/api/projects', createProjectRouter());
+  // Pass WebIA's own root so it can be excluded from recents
+  const webiaRoot = join(_dir, '..', '..');
+  app.use('/api/projects', createProjectRouter({ webiaRoot }));
   app.use('/api/writeback', (req, res, next) => { req._projectDir = state.currentProject; next(); }, createWritebackRouter());
   app.use('/api/git', createGitRouter());
   app.use('/api/ai', await createAIRouter());
   app.use('/api/devserver', createDevServerRouter());
   app.use('/api/media', createMediaRouter());
+  app.use('/api/supabase', createSupabaseRouter());
 
   // Serve the target project's files (images, css, js, etc.)
   // Track the last project dir for static preview (CSS/JS loaded without ?project= param)

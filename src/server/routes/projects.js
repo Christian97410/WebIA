@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
 import { getShellPath } from '../shell-path.js';
@@ -22,7 +22,7 @@ async function saveProjects(projects) {
   await writeFile(CONFIG_FILE, JSON.stringify(projects, null, 2), 'utf-8');
 }
 
-export function createProjectRouter() {
+export function createProjectRouter({ webiaRoot } = {}) {
   const router = Router();
 
   // List recent projects
@@ -35,6 +35,9 @@ export function createProjectRouter() {
   router.post('/', async (req, res) => {
     const { path, name } = req.body;
     if (!path) return res.status(400).json({ error: 'path required' });
+
+    // Don't register WebIA's own directory in recents
+    if (webiaRoot && resolve(path) === resolve(webiaRoot)) return res.json({ path, name, skipped: true });
 
     const projects = await loadProjects();
     const existing = projects.findIndex(p => p.path === path);
