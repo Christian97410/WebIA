@@ -1,17 +1,21 @@
 import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
+import { createRequire } from 'module';
 
-// Try to load node-pty for proper terminal emulation (lazy loaded)
+const _require = createRequire(import.meta.url);
+
+// Try to load node-pty for proper terminal emulation
 let pty = null;
 let ptyChecked = false;
 function getPty() {
   if (ptyChecked) return pty;
   ptyChecked = true;
   try {
-    pty = require('node-pty');
-  } catch {
-    // node-pty not available — fall back to basic pipes
+    pty = _require('node-pty');
+    console.log('[terminal] node-pty loaded OK');
+  } catch (e) {
+    console.warn('[terminal] node-pty not available:', e.message);
   }
   return pty;
 }
@@ -36,7 +40,7 @@ export function setupWebSocket(wss) {
 
         const dir = msg.path;
         projectWatcher = chokidar.watch(dir, {
-          ignored: /(node_modules|\.git|\.wia-sandbox|\.next|\.nuxt|\.svelte-kit|dist|\.turbo|\.cache)/,
+          ignored: /(node_modules|\.git|\.next|\.nuxt|\.svelte-kit|dist|\.turbo|\.cache)/,
           ignoreInitial: true,
           awaitWriteFinish: { stabilityThreshold: 300 },
         });
@@ -88,8 +92,9 @@ export function setupWebSocket(wss) {
             });
 
             safeSend({ type: 'terminal-ready', shell, cwd, pty: true });
-          } catch {
-            // PTY spawn failed — fall back to pipes
+            console.log('[terminal] PTY spawned OK:', shell, cwd);
+          } catch (e) {
+            console.error('[terminal] PTY spawn failed:', e.message);
             usePty = false;
           }
         }

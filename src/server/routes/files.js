@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { readFile, writeFile, readdir, stat } from 'fs/promises';
 import { join, extname, relative } from 'path';
 import { execSync } from 'child_process';
+import { validateFilePath } from '../path-guard.js';
 
 export function createFileRouter() {
   const router = Router();
@@ -11,8 +12,10 @@ export function createFileRouter() {
     try {
       const { path: filePath } = req.query;
       if (!filePath) return res.status(400).json({ error: 'path required' });
-      const content = await readFile(filePath, 'utf-8');
-      res.json({ content, path: filePath });
+      const safePath = validateFilePath(req, res, filePath);
+      if (!safePath) return; // 403 already sent
+      const content = await readFile(safePath, 'utf-8');
+      res.json({ content, path: safePath });
     } catch (err) {
       res.status(404).json({ error: err.message });
     }
@@ -23,8 +26,10 @@ export function createFileRouter() {
     try {
       const { path: filePath, content } = req.body;
       if (!filePath) return res.status(400).json({ error: 'path required' });
-      await writeFile(filePath, content, 'utf-8');
-      res.json({ ok: true, path: filePath });
+      const safePath = validateFilePath(req, res, filePath);
+      if (!safePath) return;
+      await writeFile(safePath, content, 'utf-8');
+      res.json({ ok: true, path: safePath });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -109,7 +114,7 @@ export function createFileRouter() {
   return router;
 }
 
-const IGNORED = ['node_modules', '.git', '.next', 'dist', 'build', '.cache', '.wia-sandbox'];
+const IGNORED = ['node_modules', '.git', '.next', 'dist', 'build', '.cache'];
 const EXTENSIONS = ['.html', '.css', '.js', '.jsx', '.ts', '.tsx', '.json', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp'];
 
 async function scanDir(dir, root, depth = 0) {

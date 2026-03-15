@@ -137,6 +137,15 @@ export function updateCSSProperty(cssContent, filePath, selector, prop, newValue
     context.walkRules((rule) => {
       if (rule.selector === selector) {
         rule.walkDecls(prop, (decl) => {
+          // Don't overwrite var(--*) with a raw value that's equivalent
+          // The client should already resolve tokens, but guard here too
+          if (decl.value.startsWith('var(--') && !newValue.startsWith('var(')) {
+            // Keep the variable reference if the new value is raw
+            // The client _resolveToToken should have caught this,
+            // but if it didn't, preserve the variable
+            found = true;
+            return;
+          }
           decl.value = newValue;
           found = true;
         });

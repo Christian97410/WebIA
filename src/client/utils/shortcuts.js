@@ -49,6 +49,13 @@ export class ShortcutManager {
   }
 
   _onKeyDown(e) {
+    // Skip when focus is in an input, textarea (includes xterm), or contentEditable
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) {
+      // Still allow cmd/ctrl combos (e.g. cmd+z for undo)
+      if (!e.metaKey && !e.ctrlKey) return;
+    }
+
     const parts = [];
 
     if (e.metaKey) parts.push('cmd');

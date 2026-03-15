@@ -34,7 +34,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "sidecar:build": "bash scripts/build-sidecar.sh"
+    "sidecar:build": "bash scripts/build-sidecar.sh",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
     "chokidar": "^4.0.3",

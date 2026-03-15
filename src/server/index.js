@@ -63,9 +63,10 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   app.use(express.static(clientPath));
 
-  app.use('/api/files', createFileRouter());
+  // Path guard: inject current project dir into request for file containment
+  app.use('/api/files', (req, res, next) => { req._projectDir = state.currentProject; next(); }, createFileRouter());
   app.use('/api/projects', createProjectRouter());
-  app.use('/api/writeback', createWritebackRouter());
+  app.use('/api/writeback', (req, res, next) => { req._projectDir = state.currentProject; next(); }, createWritebackRouter());
   app.use('/api/git', createGitRouter());
   app.use('/api/ai', await createAIRouter());
   app.use('/api/devserver', createDevServerRouter());
@@ -229,6 +230,12 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   app.get('/api/state', (req, res) => {
     res.json(state);
+  });
+
+  app.post('/api/state/project', (req, res) => {
+    const { projectPath } = req.body;
+    if (projectPath) state.currentProject = projectPath;
+    res.json({ ok: true, currentProject: state.currentProject });
   });
 
   server.listen(port, () => {

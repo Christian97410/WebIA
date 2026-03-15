@@ -8,8 +8,12 @@ export function createMediaRouter() {
   // ── Pixabay search (images) ──
   router.get('/search/images', async (req, res) => {
     try {
-      const { q, page = 1, type = 'photo', orientation = 'all', color = '' } = req.query;
+      const { q, page = 1, type = 'photo', orientation = 'all', color = '', provider = 'pixabay' } = req.query;
       if (!q) return res.status(400).json({ error: 'q required' });
+
+      if (provider === 'freepik') {
+        return await searchFreepikImages(req, res, q, page);
+      }
 
       const apiKey = process.env.PIXABAY_API_KEY;
       if (!apiKey) return res.status(500).json({ error: 'PIXABAY_API_KEY not configured. Get a free key at pixabay.com/api/' });
@@ -50,8 +54,12 @@ export function createMediaRouter() {
   // ── Pixabay search (videos) ──
   router.get('/search/videos', async (req, res) => {
     try {
-      const { q, page = 1 } = req.query;
+      const { q, page = 1, provider = 'pixabay' } = req.query;
       if (!q) return res.status(400).json({ error: 'q required' });
+
+      if (provider === 'freepik') {
+        return await searchFreepikVideos(req, res, q, page);
+      }
 
       const apiKey = process.env.PIXABAY_API_KEY;
       if (!apiKey) return res.status(500).json({ error: 'PIXABAY_API_KEY not configured' });
@@ -85,64 +93,71 @@ export function createMediaRouter() {
     }
   });
 
-  // ── AI Image generation ──
+  // ── Freepik icons search ──
+  router.get('/search/icons', async (req, res) => {
+    try {
+      const { q, page = 1 } = req.query;
+      if (!q) return res.status(400).json({ error: 'q required' });
+
+      const apiKey = process.env.FREEPIK_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'FREEPIK_API_KEY not configured' });
+
+      const params = new URLSearchParams({
+        term: q,
+        page: String(page),
+        per_page: '24',
+      });
+
+      const resp = await fetch(`https://api.freepik.com/v1/icons?${params}`, {
+        headers: { 'x-freepik-api-key': apiKey, 'Accept': 'application/json' },
+      });
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ error: data.message || 'Freepik icons search failed' });
+
+      res.json({
+        total: data.meta?.pagination?.total || 0,
+        icons: (data.data || []).map(ic => ({
+          id: ic.id,
+          preview: ic.thumbnails?.[0]?.url || '',
+          source: 'freepik',
+          downloads: ic.downloads || {},
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── AI Image generation (OpenAI only) ──
   router.post('/generate/image', async (req, res) => {
     try {
-      const { prompt, width = 1024, height = 1024, provider = 'openai' } = req.body;
+      const { prompt, width = 1024, height = 1024 } = req.body;
       if (!prompt) return res.status(400).json({ error: 'prompt required' });
+
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+
+      const resp = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'gpt-image-1',
+          prompt,
+          n: 1,
+          size: mapOpenAISize(width, height),
+          quality: 'medium',
+        }),
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ error: data.error?.message || 'Generation failed' });
 
       let imageUrl = null;
       let imageBase64 = null;
-
-      if (provider === 'openai') {
-        const apiKey = process.env.OPENAI_API_KEY;
-        if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
-
-        const resp = await fetch('https://api.openai.com/v1/images/generations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: 'gpt-image-1',
-            prompt,
-            n: 1,
-            size: mapOpenAISize(width, height),
-            quality: 'medium',
-          }),
-        });
-
-        const data = await resp.json();
-        if (!resp.ok) return res.status(resp.status).json({ error: data.error?.message || 'Generation failed' });
-
-        if (data.data?.[0]?.b64_json) {
-          imageBase64 = data.data[0].b64_json;
-        } else if (data.data?.[0]?.url) {
-          imageUrl = data.data[0].url;
-        }
-      } else if (provider === 'replicate') {
-        const apiKey = process.env.REPLICATE_API_TOKEN;
-        if (!apiKey) return res.status(500).json({ error: 'REPLICATE_API_TOKEN not configured' });
-
-        // Use Flux Schnell (fast, good quality)
-        const resp = await fetch('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            input: {
-              prompt,
-              num_outputs: 1,
-              aspect_ratio: getAspectRatio(width, height),
-            },
-          }),
-        });
-
-        const prediction = await resp.json();
-        if (!resp.ok) return res.status(resp.status).json({ error: prediction.detail || 'Generation failed' });
-
-        // Poll for result
-        const result = await pollReplicate(prediction.urls.get, apiKey);
-        if (result.output?.[0]) {
-          imageUrl = result.output[0];
-        }
+      if (data.data?.[0]?.b64_json) {
+        imageBase64 = data.data[0].b64_json;
+      } else if (data.data?.[0]?.url) {
+        imageUrl = data.data[0].url;
       }
 
       if (!imageUrl && !imageBase64) {
@@ -155,43 +170,40 @@ export function createMediaRouter() {
     }
   });
 
-  // ── AI Video generation ──
+  // ── AI Video generation (Luma AI) ──
   router.post('/generate/video', async (req, res) => {
     try {
-      const { prompt, duration = 5, provider = 'replicate' } = req.body;
+      const { prompt, duration = 5, aspectRatio = '16:9' } = req.body;
       if (!prompt) return res.status(400).json({ error: 'prompt required' });
 
-      let videoUrl = null;
+      const apiKey = process.env.LUMAAI_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'LUMAAI_API_KEY not configured. Get a key at lumalabs.ai' });
 
-      if (provider === 'replicate') {
-        const apiKey = process.env.REPLICATE_API_TOKEN;
-        if (!apiKey) return res.status(500).json({ error: 'REPLICATE_API_TOKEN not configured' });
+      // Create generation request
+      const resp = await fetch('https://api.lumalabs.ai/dream-machine/v1/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          prompt,
+          model: 'luma-ray-flash-2',
+          duration: String(Math.min(duration, 10)),
+          aspect_ratio: aspectRatio,
+        }),
+      });
 
-        // Use Luma Ray Flash 2 for video generation
-        const resp = await fetch('https://api.replicate.com/v1/models/luma/ray/predictions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            input: {
-              prompt,
-              duration: Math.min(duration, 10),
-              aspect_ratio: '16:9',
-            },
-          }),
-        });
+      const generation = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ error: generation.detail || generation.message || 'Generation failed' });
 
-        const prediction = await resp.json();
-        if (!resp.ok) return res.status(resp.status).json({ error: prediction.detail || 'Generation failed' });
-
-        // Poll for result (video takes longer)
-        const result = await pollReplicate(prediction.urls.get, apiKey, 120);
-        if (result.output) {
-          videoUrl = typeof result.output === 'string' ? result.output : result.output[0];
-        }
+      // Poll for result
+      const result = await pollLumaAI(generation.id, apiKey);
+      if (!result.assets?.video) {
+        return res.status(500).json({ error: 'No video generated' });
       }
 
-      if (!videoUrl) return res.status(500).json({ error: 'No video generated' });
-      res.json({ videoUrl });
+      res.json({ videoUrl: result.assets.video });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -200,14 +212,15 @@ export function createMediaRouter() {
   // ── Download media to project ──
   router.post('/download-to-project', async (req, res) => {
     try {
-      const { url, base64, projectDir, filename, subdir = 'images' } = req.body;
+      const { url, base64, projectDir, filename, subdir = 'images', isFramework } = req.body;
       if (!projectDir || !filename) return res.status(400).json({ error: 'projectDir and filename required' });
 
-      // Create assets directory
-      const assetsDir = join(projectDir, 'assets', subdir);
-      await mkdir(assetsDir, { recursive: true });
+      // Framework projects: save to public/ (served by dev server)
+      // Static projects: save to assets/
+      const baseDir = isFramework ? join(projectDir, 'public', subdir) : join(projectDir, 'assets', subdir);
+      await mkdir(baseDir, { recursive: true });
 
-      const filePath = join(assetsDir, filename);
+      const filePath = join(baseDir, filename);
 
       if (base64) {
         const buffer = Buffer.from(base64, 'base64');
@@ -221,10 +234,13 @@ export function createMediaRouter() {
         return res.status(400).json({ error: 'url or base64 required' });
       }
 
+      // Framework: path is relative to public/ root (served as /)
+      const relativePath = isFramework ? `/${subdir}/${filename}` : `assets/${subdir}/${filename}`;
+
       res.json({
         ok: true,
         path: filePath,
-        relativePath: `assets/${subdir}/${filename}`,
+        relativePath,
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -235,15 +251,81 @@ export function createMediaRouter() {
   router.get('/providers', (req, res) => {
     res.json({
       pixabay: !!process.env.PIXABAY_API_KEY,
+      freepik: !!process.env.FREEPIK_API_KEY,
       openai: !!process.env.OPENAI_API_KEY,
-      replicate: !!process.env.REPLICATE_API_TOKEN,
+      lumaai: !!process.env.LUMAAI_API_KEY,
     });
   });
 
   return router;
 }
 
-// ── Helpers ──
+// ── Freepik helpers ──
+
+async function searchFreepikImages(req, res, q, page) {
+  const apiKey = process.env.FREEPIK_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'FREEPIK_API_KEY not configured' });
+
+  const params = new URLSearchParams({
+    term: q,
+    page: String(page),
+    per_page: '24',
+    filters: JSON.stringify({ content_type: { photo: '1', psd: '0', vector: '1' } }),
+  });
+
+  const resp = await fetch(`https://api.freepik.com/v1/resources?${params}`, {
+    headers: { 'x-freepik-api-key': apiKey, 'Accept': 'application/json' },
+  });
+  const data = await resp.json();
+  if (!resp.ok) return res.status(resp.status).json({ error: data.message || 'Freepik search failed' });
+
+  res.json({
+    total: data.meta?.pagination?.total || 0,
+    images: (data.data || []).map(r => ({
+      id: r.id,
+      preview: r.image?.source?.url || r.thumbnails?.[0]?.url || '',
+      full: r.image?.source?.url || '',
+      thumb: r.thumbnails?.[0]?.url || '',
+      width: r.image?.source?.width || 0,
+      height: r.image?.source?.height || 0,
+      tags: '',
+      source: 'freepik',
+    })),
+  });
+}
+
+async function searchFreepikVideos(req, res, q, page) {
+  const apiKey = process.env.FREEPIK_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'FREEPIK_API_KEY not configured' });
+
+  const params = new URLSearchParams({
+    term: q,
+    page: String(page),
+    per_page: '12',
+  });
+
+  const resp = await fetch(`https://api.freepik.com/v1/videos?${params}`, {
+    headers: { 'x-freepik-api-key': apiKey, 'Accept': 'application/json' },
+  });
+  const data = await resp.json();
+  if (!resp.ok) return res.status(resp.status).json({ error: data.message || 'Freepik videos search failed' });
+
+  res.json({
+    total: data.meta?.pagination?.total || 0,
+    videos: (data.data || []).map(v => ({
+      id: v.id,
+      thumbnail: v.thumbnails?.[0]?.url || '',
+      url: v.video?.url || '',
+      duration: v.video?.duration || 0,
+      width: v.video?.width || 0,
+      height: v.video?.height || 0,
+      tags: '',
+      source: 'freepik',
+    })),
+  });
+}
+
+// ── General helpers ──
 
 function mapOpenAISize(w, h) {
   if (w === h) return '1024x1024';
@@ -251,28 +333,19 @@ function mapOpenAISize(w, h) {
   return '1024x1536';
 }
 
-function getAspectRatio(w, h) {
-  const r = w / h;
-  if (r > 1.6) return '16:9';
-  if (r > 1.2) return '3:2';
-  if (r > 0.9) return '1:1';
-  if (r > 0.6) return '2:3';
-  return '9:16';
-}
-
-async function pollReplicate(url, apiKey, maxAttempts = 60) {
+async function pollLumaAI(generationId, apiKey, maxAttempts = 60) {
   for (let i = 0; i < maxAttempts; i++) {
-    const resp = await fetch(url, {
+    const resp = await fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${generationId}`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
     });
     const data = await resp.json();
 
-    if (data.status === 'succeeded') return data;
-    if (data.status === 'failed' || data.status === 'canceled') {
-      throw new Error(data.error || 'Generation failed');
+    if (data.state === 'completed') return data;
+    if (data.state === 'failed') {
+      throw new Error(data.failure_reason || 'Video generation failed');
     }
 
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 3000));
   }
-  throw new Error('Generation timed out');
+  throw new Error('Video generation timed out');
 }

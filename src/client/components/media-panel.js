@@ -2,21 +2,24 @@ import { h } from '../utils/dom.js';
 import { api } from '../utils/api.js';
 
 /**
- * Media panel: stock images/videos, AI image/video generation, local import.
+ * Media panel: stock images/videos (Pixabay + Freepik), icons (Freepik),
+ * AI image (OpenAI) & video (Luma AI), local import.
  */
 export class MediaPanel {
-  constructor({ projectPath, onInsert, onClose }) {
+  constructor({ projectPath, isFramework, onInsert, onClose }) {
     this.projectPath = projectPath;
+    this.isFramework = isFramework || false;
     this.onInsert = onInsert; // (relativePath, type) => void
     this.onClose = onClose;
     this.providers = {};
     this.el = h('div', { className: 'media-panel' });
-    this.tab = 'images'; // images | videos | ai | upload
+    this.tab = 'images'; // images | videos | icons | ai | upload
     this.results = [];
     this.query = '';
     this.page = 1;
     this.loading = false;
     this.aiMode = 'image'; // image | video
+    this.stockProvider = 'pixabay'; // pixabay | freepik
 
     this.init();
   }
@@ -25,6 +28,9 @@ export class MediaPanel {
     try {
       this.providers = await api.get('/api/media/providers');
     } catch {}
+    // Default to freepik if available, pixabay otherwise
+    if (this.providers.freepik) this.stockProvider = 'freepik';
+    else if (this.providers.pixabay) this.stockProvider = 'pixabay';
     this.render();
   }
 
@@ -39,7 +45,7 @@ export class MediaPanel {
 
     // Tabs
     const tabs = h('div', { className: 'mp-tabs' });
-    for (const [key, label] of [['images', 'Images'], ['videos', 'Videos'], ['ai', 'AI'], ['upload', 'Import']]) {
+    for (const [key, label] of [['images', 'Images'], ['videos', 'Videos'], ['icons', 'Icons'], ['ai', 'AI'], ['upload', 'Import']]) {
       tabs.appendChild(h('button', {
         className: `mp-tab${this.tab === key ? ' active' : ''}`,
         onClick: () => { this.tab = key; this.results = []; this.query = ''; this.page = 1; this.render(); },
@@ -51,18 +57,47 @@ export class MediaPanel {
     const content = h('div', { className: 'mp-content' });
     if (this.tab === 'images') this.renderStockImages(content);
     else if (this.tab === 'videos') this.renderStockVideos(content);
+    else if (this.tab === 'icons') this.renderIcons(content);
     else if (this.tab === 'ai') this.renderAI(content);
     else this.renderUpload(content);
     this.el.appendChild(content);
   }
 
+  // ── Provider switcher ──
+  _renderProviderSwitch(wrap) {
+    if (!this.providers.pixabay && !this.providers.freepik) return;
+    if (!this.providers.pixabay || !this.providers.freepik) return; // only one available
+
+    const row = h('div', { className: 'mp-provider-switch' });
+    for (const [key, label] of [['pixabay', 'Pixabay'], ['freepik', 'Freepik']]) {
+      row.appendChild(h('button', {
+        className: `mp-provider-btn${this.stockProvider === key ? ' active' : ''}`,
+        onClick: () => {
+          this.stockProvider = key;
+          this.results = [];
+          this.page = 1;
+          this.render();
+          if (this.query) {
+            if (this.tab === 'images') this.searchImages();
+            else if (this.tab === 'videos') this.searchVideos();
+          }
+        },
+      }, label));
+    }
+    wrap.appendChild(row);
+  }
+
   // ── Stock Images ──
   renderStockImages(wrap) {
+    this._renderProviderSwitch(wrap);
     this._renderSearchBar(wrap, 'Search images...', () => this.searchImages());
     this.grid = h('div', { className: 'mp-grid' });
     wrap.appendChild(this.grid);
     this._renderLoadMore(wrap, () => { this.page++; this.searchImages(true); });
-    this._renderProviderNotice(wrap, 'pixabay');
+
+    if (!this.providers.pixabay && !this.providers.freepik) {
+      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set PIXABAY_API_KEY or FREEPIK_API_KEY to enable stock images.'));
+    }
   }
 
   async searchImages(append = false) {
@@ -71,9 +106,12 @@ export class MediaPanel {
     this.renderGridLoading();
 
     try {
-      const data = await api.get(`/api/media/search/images?q=${encodeURIComponent(this.query)}&page=${this.page}`);
+      const data = await api.get(`/api/media/search/images?q=${encodeURIComponent(this.query)}&page=${this.page}&provider=${this.stockProvider}`);
       if (append) this.results.push(...data.images);
       else this.results = data.images;
+      if (this._loadMoreBtn) {
+        this._loadMoreBtn.style.display = data.images.length > 0 ? '' : 'none';
+      }
     } catch (err) {
       console.error('Image search failed:', err);
     }
@@ -103,11 +141,15 @@ export class MediaPanel {
 
   // ── Stock Videos ──
   renderStockVideos(wrap) {
+    this._renderProviderSwitch(wrap);
     this._renderSearchBar(wrap, 'Search videos...', () => this.searchVideos());
     this.grid = h('div', { className: 'mp-grid mp-grid-video' });
     wrap.appendChild(this.grid);
     this._renderLoadMore(wrap, () => { this.page++; this.searchVideos(true); });
-    this._renderProviderNotice(wrap, 'pixabay');
+
+    if (!this.providers.pixabay && !this.providers.freepik) {
+      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set PIXABAY_API_KEY or FREEPIK_API_KEY to enable stock videos.'));
+    }
   }
 
   async searchVideos(append = false) {
@@ -116,9 +158,12 @@ export class MediaPanel {
     this.renderGridLoading();
 
     try {
-      const data = await api.get(`/api/media/search/videos?q=${encodeURIComponent(this.query)}&page=${this.page}`);
+      const data = await api.get(`/api/media/search/videos?q=${encodeURIComponent(this.query)}&page=${this.page}&provider=${this.stockProvider}`);
       if (append) this.results.push(...data.videos);
       else this.results = data.videos;
+      if (this._loadMoreBtn) {
+        this._loadMoreBtn.style.display = data.videos.length > 0 ? '' : 'none';
+      }
     } catch (err) {
       console.error('Video search failed:', err);
     }
@@ -171,6 +216,57 @@ export class MediaPanel {
     }
   }
 
+  // ── Icons (Freepik) ──
+  renderIcons(wrap) {
+    this._renderSearchBar(wrap, 'Search icons...', () => this.searchIcons());
+    this.grid = h('div', { className: 'mp-grid mp-grid-icons' });
+    wrap.appendChild(this.grid);
+    this._renderLoadMore(wrap, () => { this.page++; this.searchIcons(true); });
+
+    if (!this.providers.freepik) {
+      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set FREEPIK_API_KEY to enable icon search.'));
+    }
+  }
+
+  async searchIcons(append = false) {
+    if (!this.query || this.loading) return;
+    this.loading = true;
+    this.renderGridLoading();
+
+    try {
+      const data = await api.get(`/api/media/search/icons?q=${encodeURIComponent(this.query)}&page=${this.page}`);
+      if (append) this.results.push(...data.icons);
+      else this.results = data.icons;
+      if (this._loadMoreBtn) {
+        this._loadMoreBtn.style.display = data.icons.length > 0 ? '' : 'none';
+      }
+    } catch (err) {
+      console.error('Icon search failed:', err);
+    }
+
+    this.loading = false;
+    this.renderIconGrid();
+  }
+
+  renderIconGrid() {
+    if (!this.grid) return;
+    this.grid.innerHTML = '';
+    if (this.results.length === 0 && this.query) {
+      this.grid.appendChild(h('div', { className: 'mp-empty' }, 'No results'));
+      return;
+    }
+    for (const ic of this.results) {
+      const item = h('div', { className: 'mp-grid-item mp-icon-item' });
+      item.appendChild(h('img', { src: ic.preview, loading: 'lazy' }));
+      const actions = h('div', { className: 'mp-grid-actions' });
+      actions.appendChild(h('button', {
+        onClick: () => this.downloadAndInsert(ic.preview, `freepik-icon-${ic.id}.png`, 'image'),
+      }, 'Use'));
+      item.appendChild(actions);
+      this.grid.appendChild(item);
+    }
+  }
+
   // ── AI Generation (Image + Video) ──
   renderAI(wrap) {
     // Image / Video toggle
@@ -188,14 +284,10 @@ export class MediaPanel {
   }
 
   renderAIImage(wrap) {
-    // Provider
-    const providerSel = h('select', { className: 'mp-select' });
-    if (this.providers.openai) providerSel.appendChild(h('option', { value: 'openai' }, 'OpenAI (GPT Image)'));
-    if (this.providers.replicate) providerSel.appendChild(h('option', { value: 'replicate' }, 'Replicate (Flux)'));
-    if (!this.providers.openai && !this.providers.replicate) {
-      providerSel.appendChild(h('option', { value: '' }, 'No provider configured'));
+    if (!this.providers.openai) {
+      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set OPENAI_API_KEY to enable AI image generation.'));
+      return;
     }
-    wrap.appendChild(h('div', { className: 'mp-row' }, providerSel));
 
     // Prompt
     const prompt = h('textarea', { className: 'mp-prompt', placeholder: 'Describe the image...', rows: '3' });
@@ -213,14 +305,13 @@ export class MediaPanel {
     const genBtn = h('button', {
       className: 'mp-gen-btn',
       onClick: async () => {
-        const provider = providerSel.value;
         const text = prompt.value.trim();
-        if (!text || !provider) return;
+        if (!text) return;
         const [w, hh] = sizeSel.value.split('x').map(Number);
         genBtn.disabled = true;
         status.textContent = 'Generating image...';
         try {
-          const data = await api.post('/api/media/generate/image', { prompt: text, width: w, height: hh, provider });
+          const data = await api.post('/api/media/generate/image', { prompt: text, width: w, height: hh });
           status.innerHTML = '';
           const preview = h('div', { className: 'mp-gen-preview' });
           const src = data.imageBase64 ? `data:image/png;base64,${data.imageBase64}` : data.imageUrl;
@@ -241,20 +332,13 @@ export class MediaPanel {
     }, 'Generate Image');
     wrap.appendChild(genBtn);
     wrap.appendChild(status);
-
-    if (!this.providers.openai && !this.providers.replicate) {
-      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set OPENAI_API_KEY or REPLICATE_API_TOKEN to enable AI image generation.'));
-    }
   }
 
   renderAIVideo(wrap) {
-    // Provider
-    const providerSel = h('select', { className: 'mp-select' });
-    if (this.providers.replicate) providerSel.appendChild(h('option', { value: 'replicate' }, 'Replicate (Luma Ray)'));
-    if (!this.providers.replicate) {
-      providerSel.appendChild(h('option', { value: '' }, 'No provider configured'));
+    if (!this.providers.lumaai) {
+      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set LUMAAI_API_KEY to enable AI video generation. Get a key at lumalabs.ai'));
+      return;
     }
-    wrap.appendChild(h('div', { className: 'mp-row' }, providerSel));
 
     // Prompt
     const prompt = h('textarea', { className: 'mp-prompt', placeholder: 'Describe the video...', rows: '3' });
@@ -266,19 +350,25 @@ export class MediaPanel {
     durSel.appendChild(h('option', { value: '10' }, '10 seconds'));
     wrap.appendChild(h('div', { className: 'mp-row' }, durSel));
 
+    // Aspect ratio
+    const arSel = h('select', { className: 'mp-select' });
+    arSel.appendChild(h('option', { value: '16:9' }, '16:9 Landscape'));
+    arSel.appendChild(h('option', { value: '9:16' }, '9:16 Portrait'));
+    arSel.appendChild(h('option', { value: '1:1' }, '1:1 Square'));
+    wrap.appendChild(h('div', { className: 'mp-row' }, arSel));
+
     // Generate
     const status = h('div', { className: 'mp-gen-status' });
     const genBtn = h('button', {
       className: 'mp-gen-btn',
       onClick: async () => {
-        const provider = providerSel.value;
         const text = prompt.value.trim();
-        if (!text || !provider) return;
+        if (!text) return;
         genBtn.disabled = true;
         status.textContent = 'Generating video... This may take a few minutes.';
         try {
           const data = await api.post('/api/media/generate/video', {
-            prompt: text, duration: parseInt(durSel.value), provider,
+            prompt: text, duration: parseInt(durSel.value), aspectRatio: arSel.value,
           });
           status.innerHTML = '';
           const preview = h('div', { className: 'mp-gen-preview' });
@@ -296,10 +386,6 @@ export class MediaPanel {
     }, 'Generate Video');
     wrap.appendChild(genBtn);
     wrap.appendChild(status);
-
-    if (!this.providers.replicate) {
-      wrap.appendChild(h('div', { className: 'mp-notice' }, 'Set REPLICATE_API_TOKEN to enable AI video generation.'));
-    }
   }
 
   // ── Upload tab ──
@@ -339,14 +425,6 @@ export class MediaPanel {
     wrap.appendChild(this._loadMoreBtn);
   }
 
-  _renderProviderNotice(wrap, provider) {
-    if (!this.providers[provider]) {
-      wrap.appendChild(h('div', { className: 'mp-notice' },
-        `Set ${provider.toUpperCase()}_API_KEY env variable. Free key at ${provider}.com/api/`
-      ));
-    }
-  }
-
   renderGridLoading() {
     if (!this.grid) return;
     this.grid.innerHTML = '';
@@ -366,6 +444,7 @@ export class MediaPanel {
         const subdir = isVideo ? 'videos' : 'images';
         const data = await api.post('/api/media/download-to-project', {
           base64, projectDir: this.projectPath, filename: file.name, subdir,
+          isFramework: this.isFramework,
         });
         this.uploadStatus.textContent = `Uploaded: ${file.name}`;
         this.onInsert(data.relativePath, isVideo ? 'video' : 'image');
@@ -380,6 +459,7 @@ export class MediaPanel {
       const subdir = type === 'video' ? 'videos' : 'images';
       const data = await api.post('/api/media/download-to-project', {
         url, base64, projectDir: this.projectPath, filename, subdir,
+        isFramework: this.isFramework,
       });
       this.onInsert(data.relativePath, type);
       this.onClose();

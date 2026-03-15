@@ -17,10 +17,14 @@ export class EditorView {
     this.zoom = 100;
     this.chatHeight = 200;
 
+    this._chatSessionId = null;
+    this._chatSessionsOpen = false;
     this.undoStack = [];
     this.redoStack = [];
     this.cssRulesCache = {};
     this._currentTool = 'select';
+    this._rightTab = 'style'; // 'elements' | 'style'
+    this._collapsedElements = new Set(); // track collapsed tree nodes
 
     this.el = h('div', { className: 'editor-view' });
     this.render();
@@ -162,76 +166,112 @@ export class EditorView {
   renderLeftPanel() {
     const panel = h('div', { className: 'panel-left' });
 
-    // Pages section
-    panel.appendChild(h('div', { className: 'panel-section-header' }, 'Pages'));
-    const pagesList = h('div', { className: 'pages-list' });
+    // Explorer header
+    const explorerHeader = h('div', { className: 'panel-section-header' });
+    const projectName = this.projectPath.split('/').pop().toUpperCase();
+    explorerHeader.textContent = projectName;
+    panel.appendChild(explorerHeader);
 
-    if (this.devServer) {
-      // Framework project: build a folder tree from relativePaths
-      const tree = {};
-      for (const page of this.htmlFiles) {
-        const parts = page.relativePath.replace(/^src\//, '').split('/');
-        let node = tree;
-        for (let i = 0; i < parts.length - 1; i++) {
-          const dir = parts[i];
-          if (!node[dir]) node[dir] = {};
-          node = node[dir];
-        }
-        node['__file_' + parts[parts.length - 1]] = page;
+    // File tree
+    const fileTree = h('div', { className: 'file-tree' });
+    this._collapsedFolders = this._collapsedFolders || new Set();
+
+    // Build tree from all files
+    const tree = {};
+    for (const file of this.files) {
+      const parts = file.relativePath.split('/');
+      let node = tree;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!node[parts[i]]) node[parts[i]] = {};
+        node = node[parts[i]];
       }
+      node['__f_' + parts[parts.length - 1]] = file;
+    }
 
-      const renderTree = (node, depth = 0) => {
-        const entries = Object.entries(node).sort(([a], [b]) => {
-          const aIsFile = a.startsWith('__file_');
-          const bIsFile = b.startsWith('__file_');
-          if (aIsFile !== bIsFile) return aIsFile ? 1 : -1;
-          return a.localeCompare(b);
-        });
+    const fileIcon = (name) => {
+      const ext = name.split('.').pop().toLowerCase();
+      const icons = {
+        js: { color: '#e8d44d', label: 'JS' },
+        jsx: { color: '#61dafb', label: 'JSX' },
+        ts: { color: '#3178c6', label: 'TS' },
+        tsx: { color: '#3178c6', label: 'TSX' },
+        css: { color: '#563d7c', label: 'CSS' },
+        scss: { color: '#c6538c', label: 'SC' },
+        html: { color: '#e34c26', label: 'HTML' },
+        json: { color: '#a1a1aa', label: '{}' },
+        md: { color: '#519aba', label: 'MD' },
+        svg: { color: '#ffb13b', label: 'SVG' },
+        png: { color: '#a1a1aa', label: 'IMG' },
+        jpg: { color: '#a1a1aa', label: 'IMG' },
+        gif: { color: '#a1a1aa', label: 'IMG' },
+        lock: { color: '#555', label: 'LK' },
+        toml: { color: '#9c4221', label: 'TM' },
+        yaml: { color: '#cb171e', label: 'YM' },
+        yml: { color: '#cb171e', label: 'YM' },
+        rs: { color: '#dea584', label: 'RS' },
+        py: { color: '#3572A5', label: 'PY' },
+      };
+      const i = icons[ext] || { color: '#a1a1aa', label: ext?.toUpperCase()?.slice(0, 3) || '?' };
+      return `<span class="file-icon" style="color:${i.color}">${i.label}</span>`;
+    };
 
-        for (const [key, value] of entries) {
-          if (key.startsWith('__file_')) {
-            const page = value;
-            const fileName = key.slice(7);
-            pagesList.appendChild(
-              h('div', {
-                className: `page-item${page === this.activePage ? ' active' : ''}`,
-                style: { paddingLeft: `${8 + depth * 12}px` },
-                onClick: () => this.loadPage(page),
-              },
-                h('span', { className: 'page-item-name' }, fileName),
-                page === this.activePage ? h('div', { className: 'page-item-indicator' }) : document.createTextNode('')
-              )
-            );
-          } else {
-            // Folder
-            const isGroup = key.startsWith('(') && key.endsWith(')');
-            const label = isGroup ? key.slice(1, -1) : key;
-            pagesList.appendChild(
-              h('div', {
-                className: `page-folder${isGroup ? ' page-folder--group' : ''}`,
-                style: { paddingLeft: `${8 + depth * 12}px` },
-              }, label)
-            );
-            renderTree(value, depth + 1);
+    const folderIcon = (open) => {
+      return open
+        ? '<svg class="folder-chevron folder-chevron--open" width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>'
+        : '<svg class="folder-chevron" width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4"/></svg>';
+    };
+
+    const renderNode = (node, depth = 0, pathPrefix = '') => {
+      const entries = Object.entries(node).sort(([a, av], [b, bv]) => {
+        const aFile = a.startsWith('__f_');
+        const bFile = b.startsWith('__f_');
+        if (aFile !== bFile) return aFile ? 1 : -1;
+        return a.localeCompare(b);
+      });
+
+      for (const [key, value] of entries) {
+        if (key.startsWith('__f_')) {
+          const file = value;
+          const name = key.slice(4);
+          const isPage = this.htmlFiles.includes(file);
+          const isActive = file === this.activePage;
+          const item = h('div', {
+            className: `file-item${isActive ? ' file-item--active' : ''}`,
+            style: `padding-left:${12 + depth * 16}px`,
+            onClick: () => { if (isPage) this.loadPage(file); },
+          });
+          item.innerHTML = `${fileIcon(name)}<span class="file-item-name">${name}</span>`;
+          if (!isPage) item.classList.add('file-item--readonly');
+          fileTree.appendChild(item);
+        } else {
+          const folderPath = pathPrefix + key;
+          const collapsed = this._collapsedFolders.has(folderPath);
+          const folder = h('div', {
+            className: 'file-folder',
+            style: `padding-left:${12 + depth * 16}px`,
+          });
+          folder.innerHTML = `${folderIcon(!collapsed)}<span class="file-folder-name">${key}</span>`;
+          folder.addEventListener('click', () => {
+            if (this._collapsedFolders.has(folderPath)) {
+              this._collapsedFolders.delete(folderPath);
+            } else {
+              this._collapsedFolders.add(folderPath);
+            }
+            // Re-render just the file tree
+            const newPanel = this.renderLeftPanel();
+            this.el.querySelector('.panel-left').replaceWith(newPanel);
+          });
+          fileTree.appendChild(folder);
+
+          if (!collapsed) {
+            renderNode(value, depth + 1, folderPath + '/');
           }
         }
-      };
-      renderTree(tree);
-    } else {
-      // Static project: flat list
-      for (const page of this.htmlFiles) {
-        pagesList.appendChild(
-          h('div', {
-            className: `page-item${page === this.activePage ? ' active' : ''}`,
-            onClick: () => this.loadPage(page),
-          },
-            h('span', {}, page.name),
-            page === this.activePage ? h('div', { className: 'page-item-indicator' }) : document.createTextNode('')
-          )
-        );
       }
-    }
-    panel.appendChild(pagesList);
+    };
+
+    renderNode(tree);
+    panel.appendChild(fileTree);
 
     // Layers section
     panel.appendChild(h('div', { className: 'panel-section-header' }, 'Layers'));
@@ -393,12 +433,43 @@ export class EditorView {
       <div class="chat-header-left">
         ${this._claudeLogoSvg(14)}
         <span class="chat-header-title">Claude</span>
+        <button class="chat-sessions-btn" title="Conversation history">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
       <div class="chat-header-right">
+        <button class="chat-new-session-btn" title="New chat">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <span class="chat-status-dot"></span>
       </div>
     `;
     this.chatContent.appendChild(chatHeader);
+
+    // Sessions dropdown
+    this._chatSessionsDropdown = h('div', { className: 'chat-sessions-dropdown' });
+    this._chatSessionsDropdown.style.display = 'none';
+    this.chatContent.appendChild(this._chatSessionsDropdown);
+
+    // Wire up sessions button
+    chatHeader.querySelector('.chat-sessions-btn').addEventListener('click', () => {
+      this._toggleSessionsDropdown();
+    });
+
+    // Wire up new session button
+    chatHeader.querySelector('.chat-new-session-btn').addEventListener('click', () => {
+      this._startNewChatSession();
+    });
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      if (this._chatSessionsOpen &&
+          !this._chatSessionsDropdown.contains(e.target) &&
+          !chatHeader.querySelector('.chat-sessions-btn').contains(e.target)) {
+        this._chatSessionsDropdown.style.display = 'none';
+        this._chatSessionsOpen = false;
+      }
+    });
 
     // Messages
     this.chatMessages = h('div', { className: 'chat-messages' });
@@ -440,13 +511,58 @@ export class EditorView {
     }});
     sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-    inputWrapper.appendChild(this.chatInput);
-    inputWrapper.appendChild(sendBtn);
+    // Attach file button
+    const attachBtn = h('button', { className: 'chat-attach-btn', title: 'Attach file' });
+    attachBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    this._chatAttachInput = h('input', { type: 'file', multiple: true, style: 'display:none' });
+    attachBtn.addEventListener('click', () => this._chatAttachInput.click());
+    this._chatAttachedFiles = [];
+    this._chatAttachInput.addEventListener('change', () => {
+      const files = Array.from(this._chatAttachInput.files || []);
+      this._chatAttachedFiles = files;
+      this._updateAttachPreview();
+      this._chatAttachInput.value = '';
+    });
 
-    // Footer hint
-    const footer = h('div', { className: 'chat-footer' });
-    footer.innerHTML = '<span class="chat-footer-hint"><kbd>Enter</kbd> to send &middot; <kbd>Shift+Enter</kbd> for new line</span>';
-    inputWrapper.appendChild(footer);
+    this._chatAttachPreview = h('div', { className: 'chat-attach-preview' });
+    this._chatAttachPreview.style.display = 'none';
+
+    const inputRow = h('div', { className: 'chat-input-row' });
+    inputRow.appendChild(attachBtn);
+    inputRow.appendChild(this.chatInput);
+    inputRow.appendChild(sendBtn);
+    inputWrapper.appendChild(this._chatAttachPreview);
+    inputWrapper.appendChild(inputRow);
+
+    // Status bar: mode toggle + current file + context %
+    this._chatEditMode = 'auto'; // 'auto' | 'ask' | 'plan'
+    this._chatContextPercent = 0;
+
+    const statusBar = h('div', { className: 'chat-status-bar' });
+
+    // Mode toggle
+    this._chatModeBtn = h('button', { className: 'chat-mode-btn' });
+    this._updateModeBtn();
+    this._chatModeBtn.addEventListener('click', () => {
+      const modes = ['auto', 'ask', 'plan'];
+      const idx = modes.indexOf(this._chatEditMode);
+      this._chatEditMode = modes[(idx + 1) % modes.length];
+      this._updateModeBtn();
+    });
+
+    // Current file
+    this._chatFileLabel = h('span', { className: 'chat-status-file' });
+    this._chatFileLabel.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" stroke="currentColor" stroke-width="2"/><path d="M13 2v7h7" stroke="currentColor" stroke-width="2"/></svg><span>${this.activePage?.relativePath || 'No file'}</span>`;
+
+    // Context %
+    this._chatContextLabel = h('span', { className: 'chat-status-context' });
+    this._chatContextLabel.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>$0.00</span>`;
+    this._sessionCost = 0;
+
+    statusBar.appendChild(this._chatModeBtn);
+    statusBar.appendChild(this._chatFileLabel);
+    statusBar.appendChild(this._chatContextLabel);
+    inputWrapper.appendChild(statusBar);
 
     this.chatContent.appendChild(inputWrapper);
     panel.appendChild(this.chatContent);
@@ -634,6 +750,7 @@ export class EditorView {
   }
 
   setChatConnected(providerName) {
+    this._aiConnected = true;
     this.chatAuthScreen.style.display = 'none';
     this.chatContent.style.display = 'flex';
     const dot = this.chatContent.querySelector('.chat-status-dot');
@@ -645,6 +762,62 @@ export class EditorView {
     if (this.chatMessages.children.length === 0) {
       this.showChatWelcome();
     }
+
+    // First-time framework setup: ask AI to configure editor integration
+    if (this.devServer) {
+      this._runEditorSetup();
+    }
+  }
+
+  // One-time setup: ensure wia-overrides.css is created and imported
+  async _runEditorSetup() {
+    const setupKey = `wia-setup-done:${this.projectPath}`;
+    if (localStorage.getItem(setupKey)) return;
+
+    // Ensure wia-overrides.css file exists + server-side import injection
+    let result;
+    try {
+      result = await api.post('/api/writeback/ensure-override-css', {
+        projectDir: this.projectPath,
+        htmlFile: this.activePage?.path || null,
+        isFramework: true,
+      });
+    } catch {
+      return; // can't create the file, skip setup
+    }
+
+    if (result?.importInjected) {
+      // Server successfully injected the import — no AI needed
+      localStorage.setItem(setupKey, '1');
+      return;
+    }
+
+    // Server couldn't find a standard entry file — ask AI with precise instructions
+    const overridePath = result?.path || `${this.projectPath}/src/wia-overrides.css`;
+    const setupPrompt = [
+      `[WebIA editor setup — automatic, no user action needed]`,
+      ``,
+      `A CSS override file has been created at: ${overridePath}`,
+      `It needs to be imported so visual editor styles are applied.`,
+      ``,
+      `Steps:`,
+      `1. Find the project's CSS entry file (e.g. globals.css, index.css) or JS/TS entry file (e.g. layout.tsx, main.tsx, _app.tsx)`,
+      `2. Check if "wia-overrides.css" is already imported — if yes, do nothing`,
+      `3. If not imported, add ONLY this line:`,
+      `   - In a CSS file: @import './path/to/wia-overrides.css';  (after other @imports)`,
+      `   - In a JS/TS file: import './path/to/wia-overrides.css';  (after other imports)`,
+      `4. Compute the relative path from the entry file's directory to ${overridePath}`,
+      ``,
+      `IMPORTANT:`,
+      `- Do NOT modify any existing imports or code`,
+      `- Do NOT add the import inside a function, component, or JSX block`,
+      `- Add it as a top-level import statement only`,
+      `- If unsure, prefer adding to a CSS file over a JS/TS file`,
+      `- Respond briefly when done`,
+    ].join('\n');
+
+    this.sendChatMessage(setupPrompt);
+    localStorage.setItem(setupKey, '1');
   }
 
   showChatWelcome() {
@@ -655,6 +828,125 @@ export class EditorView {
       <div class="chat-welcome-hint">Describe what you want to change and Claude will edit your code.</div>
     `;
     this.chatMessages.appendChild(welcome);
+  }
+
+  // ── Chat sessions ──────────────────────────────────────────────────────────
+
+  async _toggleSessionsDropdown() {
+    if (this._chatSessionsOpen) {
+      this._chatSessionsDropdown.style.display = 'none';
+      this._chatSessionsOpen = false;
+      return;
+    }
+    this._chatSessionsOpen = true;
+    this._chatSessionsDropdown.style.display = 'block';
+    this._chatSessionsDropdown.innerHTML = '<div class="chat-sessions-loading">Loading...</div>';
+
+    try {
+      const sessions = await api.get(`/api/ai/sdk/sessions?projectPath=${encodeURIComponent(this.projectPath)}`);
+      this._renderSessionsList(sessions);
+    } catch {
+      this._chatSessionsDropdown.innerHTML = '<div class="chat-sessions-loading">No conversations yet</div>';
+    }
+  }
+
+  _renderSessionsList(sessions) {
+    this._chatSessionsDropdown.innerHTML = '';
+
+    if (!sessions || sessions.length === 0) {
+      this._chatSessionsDropdown.innerHTML = '<div class="chat-sessions-empty">No conversations yet</div>';
+      return;
+    }
+
+    for (const s of sessions) {
+      const item = h('div', {
+        className: 'chat-session-item' + (s.id === this._chatSessionId ? ' chat-session-item--active' : ''),
+      });
+
+      const title = h('span', { className: 'chat-session-title' }, s.title || 'Untitled');
+      const meta = h('span', { className: 'chat-session-meta' });
+      meta.textContent = this._relativeDate(s.lastMessageAt || s.createdAt);
+
+      const deleteBtn = h('button', { className: 'chat-session-delete', title: 'Delete' });
+      deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await fetch(`/api/ai/sdk/sessions/${s.id}?projectPath=${encodeURIComponent(this.projectPath)}`, { method: 'DELETE' });
+        item.remove();
+        if (this._chatSessionId === s.id) {
+          this._startNewChatSession();
+        }
+        if (this._chatSessionsDropdown.children.length === 0) {
+          this._chatSessionsDropdown.innerHTML = '<div class="chat-sessions-empty">No conversations yet</div>';
+        }
+      });
+
+      item.appendChild(title);
+      item.appendChild(meta);
+      item.appendChild(deleteBtn);
+
+      item.addEventListener('click', () => {
+        this._loadChatSession(s.id);
+        this._chatSessionsDropdown.style.display = 'none';
+        this._chatSessionsOpen = false;
+      });
+
+      this._chatSessionsDropdown.appendChild(item);
+    }
+  }
+
+  async _loadChatSession(sessionId) {
+    try {
+      const session = await api.get(`/api/ai/sdk/sessions/${sessionId}?projectPath=${encodeURIComponent(this.projectPath)}`);
+      this._chatSessionId = sessionId;
+      this.chatMessages.innerHTML = '';
+
+      if (!session.messages || session.messages.length === 0) {
+        this.showChatWelcome();
+        return;
+      }
+
+      for (const msg of session.messages) {
+        if (msg.role === 'user') {
+          const el = h('div', { className: 'chat-message chat-message-user' }, msg.content);
+          this.chatMessages.appendChild(el);
+        } else if (msg.role === 'assistant') {
+          const el = h('div', { className: 'chat-message chat-message-ai' });
+          const textDiv = document.createElement('div');
+          textDiv.className = 'chat-text';
+          textDiv.innerHTML = this._renderMarkdown(msg.content);
+          el.appendChild(textDiv);
+          this.chatMessages.appendChild(el);
+        }
+      }
+
+      this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    } catch (err) {
+      console.warn('Failed to load session:', err);
+    }
+  }
+
+  _startNewChatSession() {
+    this._chatSessionId = null;
+    this.chatMessages.innerHTML = '';
+    this.showChatWelcome();
+    this._chatSessionsDropdown.style.display = 'none';
+    this._chatSessionsOpen = false;
+  }
+
+  _relativeDate(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 4) return `${weeks}w ago`;
+    return new Date(ts).toLocaleDateString();
   }
 
   _renderAuthScreen(setup) {
@@ -918,27 +1210,236 @@ export class EditorView {
   renderRightPanel() {
     const panel = h('div', { className: 'panel-right' });
 
-    if (!this.selectedElement) {
-      panel.appendChild(h('div', { className: 'sp-empty' }, 'Select an element'));
-      return panel;
+    // Tabs: Elements | Style
+    const tabs = h('div', { className: 'rp-tabs' });
+    for (const [key, label] of [['elements', 'Elements'], ['style', 'Style']]) {
+      tabs.appendChild(h('button', {
+        className: `rp-tab${this._rightTab === key ? ' active' : ''}`,
+        onClick: () => { this._rightTab = key; this.refreshRightPanel(); },
+      }, label));
+    }
+    panel.appendChild(tabs);
+
+    if (this._rightTab === 'elements') {
+      panel.appendChild(this._renderElementsTree());
+    } else {
+      panel.appendChild(this._renderStyleContent());
     }
 
-    // Element tag badge
+    return panel;
+  }
+
+  _renderStyleContent() {
+    const wrap = h('div', { className: 'sp-wrap' });
+
+    if (!this.selectedElement) {
+      wrap.appendChild(h('div', { className: 'sp-empty' }, 'Select an element'));
+      return wrap;
+    }
+
     const tag = this.selectedElement.tagName.toLowerCase();
     const cls = this.selectedElement.className && typeof this.selectedElement.className === 'string'
       ? `.${this.selectedElement.className.split(' ').filter(Boolean)[0] || ''}`
       : '';
-    panel.appendChild(h('div', { className: 'sp-tag' }, `${tag}${cls}`));
+    wrap.appendChild(h('div', { className: 'sp-tag' }, `${tag}${cls}`));
 
-    panel.appendChild(this._renderLayout());
-    panel.appendChild(this._renderSpacing());
-    panel.appendChild(this._renderSize());
-    panel.appendChild(this._renderTypo());
-    panel.appendChild(this._renderFill());
-    panel.appendChild(this._renderBorder());
-    panel.appendChild(this._renderPosition());
+    // Media button for images/videos/svg
+    if (['img', 'video', 'picture', 'svg'].includes(tag)) {
+      wrap.appendChild(this._renderMediaAction());
+    }
 
-    return panel;
+    wrap.appendChild(this._renderLayout());
+    wrap.appendChild(this._renderSpacing());
+    wrap.appendChild(this._renderSize());
+    wrap.appendChild(this._renderTypo());
+    wrap.appendChild(this._renderFill());
+    wrap.appendChild(this._renderBorder());
+    wrap.appendChild(this._renderPosition());
+
+    return wrap;
+  }
+
+  // ── Media action (change image/video via media panel) ──
+  _renderMediaAction() {
+    const tag = this.selectedElement.tagName.toLowerCase();
+    const isImg = tag === 'img';
+    const isVid = tag === 'video';
+    const label = isImg ? 'Change image' : isVid ? 'Change video' : 'Change media';
+
+    const row = h('div', { className: 'sp-media-action' });
+
+    if (isImg || isVid) {
+      const src = this.selectedElement.getAttribute('src') || '';
+      const srcShort = src.split('/').pop() || '';
+      if (srcShort) {
+        row.appendChild(h('div', { className: 'sp-media-src' }, srcShort));
+      }
+    }
+
+    const btn = h('button', {
+      className: 'sp-media-btn',
+      onClick: () => this.toggleMediaPanel(),
+    });
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="5" cy="6.5" r="1.5" fill="currentColor"/><path d="M1.5 11l3.5-3 2.5 2 3-4 4 5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+    btn.appendChild(document.createTextNode(' ' + label));
+    row.appendChild(btn);
+
+    return row;
+  }
+
+  // ── Elements tree (Figma-style) ──
+  _renderElementsTree() {
+    const wrap = h('div', { className: 'el-tree' });
+    const doc = this.iframe?.contentDocument;
+    if (!doc?.body) {
+      wrap.appendChild(h('div', { className: 'sp-empty' }, 'No page loaded'));
+      return wrap;
+    }
+    this._buildElementTree(wrap, doc.body, 0);
+    return wrap;
+  }
+
+  _getElementIcon(tag) {
+    const icons = {
+      body: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/></svg>',
+      div: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/></svg>',
+      section: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="6" x2="14" y2="6" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>',
+      header: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="6" x2="14" y2="6" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>',
+      footer: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="10" x2="14" y2="10" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>',
+      nav: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.5"/></svg>',
+      main: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/></svg>',
+      article: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.4"/><line x1="5" y1="8.5" x2="11" y2="8.5" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.4"/></svg>',
+      img: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="5.5" cy="6" r="1.2" fill="currentColor"/><path d="M2 11l3-3 2 2 3-4 4 5" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>',
+      picture: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><circle cx="5.5" cy="6" r="1.2" fill="currentColor"/><path d="M2 11l3-3 2 2 3-4 4 5" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>',
+      video: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M7 6v4l3-2-3-2z" fill="currentColor"/></svg>',
+      svg: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.2"/><path d="M5 8l2 2 4-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      a: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M6.5 9.5l3-3M7 10c-.8.8-2.2.8-3 0s-.8-2.2 0-3l1.5-1.5M9 6c.8-.8 2.2-.8 3 0s.8 2.2 0 3L10.5 10.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+      button: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="5" width="12" height="6" rx="2" stroke="currentColor" stroke-width="1.2"/></svg>',
+      input: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="5" width="12" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="4" y1="8" x2="4" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+      textarea: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="4" y1="5.5" x2="4" y2="5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+      form: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="1" opacity="0.4"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" stroke-width="1" opacity="0.4"/></svg>',
+      ul: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="5.5" r="1" fill="currentColor"/><line x1="7" y1="5.5" x2="13" y2="5.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/><circle cx="4" cy="8.5" r="1" fill="currentColor"/><line x1="7" y1="8.5" x2="13" y2="8.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/><circle cx="4" cy="11.5" r="1" fill="currentColor"/><line x1="7" y1="11.5" x2="13" y2="11.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>',
+      ol: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="5.5" r="1" fill="currentColor"/><line x1="7" y1="5.5" x2="13" y2="5.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/><circle cx="4" cy="8.5" r="1" fill="currentColor"/><line x1="7" y1="8.5" x2="13" y2="8.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>',
+      li: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="8" r="1" fill="currentColor"/><line x1="7" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>',
+      span: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><text x="2" y="12" font-size="11" font-weight="500" fill="currentColor" opacity="0.7">T</text></svg>',
+      p: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><line x1="3" y1="5" x2="13" y2="5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="3" y1="11" x2="9" y2="11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+      table: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="6" x2="14" y2="6" stroke="currentColor" stroke-width="1"/><line x1="7" y1="6" x2="7" y2="13" stroke="currentColor" stroke-width="1"/></svg>',
+      iframe: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><rect x="4" y="5" width="8" height="6" rx="1" stroke="currentColor" stroke-width="0.8" opacity="0.5"/></svg>',
+      i: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><text x="5" y="12" font-size="11" font-style="italic" font-weight="500" fill="currentColor" opacity="0.7">I</text></svg>',
+      strong: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><text x="3" y="12" font-size="11" font-weight="800" fill="currentColor">B</text></svg>',
+      b: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><text x="3" y="12" font-size="11" font-weight="800" fill="currentColor">B</text></svg>',
+    };
+    for (const t of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+      icons[t] = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><text x="2" y="12" font-size="10" font-weight="700" fill="currentColor">${t.toUpperCase()}</text></svg>`;
+    }
+    return icons[tag] || '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="3" y="4" width="10" height="8" rx="1" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5"/></svg>';
+  }
+
+  _getElementLabel(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'body') return 'body';
+    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'a', 'button', 'li', 'label', 'td', 'th'].includes(tag)) {
+      const text = el.textContent?.trim();
+      if (text) return text.length > 28 ? text.slice(0, 28) + '\u2026' : text;
+    }
+    if (tag === 'img') {
+      const alt = el.getAttribute('alt');
+      if (alt) return alt.length > 28 ? alt.slice(0, 28) + '\u2026' : alt;
+      const src = el.getAttribute('src') || '';
+      const name = src.split('/').pop();
+      if (name) return name.length > 28 ? name.slice(0, 28) + '\u2026' : name;
+    }
+    if (tag === 'input') {
+      const type = el.getAttribute('type') || 'text';
+      const ph = el.getAttribute('placeholder');
+      return ph ? `${type}: ${ph}` : type;
+    }
+    const cls = el.className && typeof el.className === 'string'
+      ? el.className.split(' ').filter(Boolean)[0] : '';
+    if (cls) return `.${cls}`;
+    if (el.id) return `#${el.id}`;
+    return tag;
+  }
+
+  _buildElementTree(container, element, depth) {
+    if (element.nodeType !== 1) return;
+    const tag = element.tagName.toLowerCase();
+    if (['script', 'style', 'link', 'meta', 'head', 'noscript', 'br'].includes(tag)) return;
+
+    const children = Array.from(element.children).filter(
+      c => !['script', 'style', 'link', 'meta', 'noscript'].includes(c.tagName.toLowerCase())
+    );
+    const hasChildren = children.length > 0;
+    const elId = this._getElementTreeId(element);
+    const isCollapsed = this._collapsedElements.has(elId);
+    const isSelected = element === this.selectedElement;
+
+    const row = h('div', {
+      className: `el-row${isSelected ? ' selected' : ''}`,
+    });
+    row.style.paddingLeft = `${6 + depth * 14}px`;
+
+    // Chevron
+    const chevron = h('span', { className: `el-chevron${hasChildren ? '' : ' empty'}` });
+    if (hasChildren) {
+      chevron.innerHTML = isCollapsed
+        ? '<svg width="8" height="8" viewBox="0 0 8 8"><path d="M2 1.5l3 2.5-3 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'
+        : '<svg width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 2l2.5 3-2.5 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none" transform="rotate(90 4 4)"/></svg>';
+      chevron.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isCollapsed) this._collapsedElements.delete(elId);
+        else this._collapsedElements.add(elId);
+        this.refreshRightPanel();
+      });
+    }
+    row.appendChild(chevron);
+
+    // Icon
+    const icon = h('span', { className: 'el-icon' });
+    icon.innerHTML = this._getElementIcon(tag);
+    row.appendChild(icon);
+
+    // Label
+    row.appendChild(h('span', { className: 'el-label' }, this._getElementLabel(element)));
+
+    // Tag type (subtle)
+    if (tag !== 'body') {
+      row.appendChild(h('span', { className: 'el-type' }, tag));
+    }
+
+    // Click to select
+    row.addEventListener('click', () => {
+      this.selectElement(element);
+      element.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    // Hover: highlight in canvas
+    row.addEventListener('mouseenter', () => {
+      if (this._currentTool !== 'navigate') this.showHover(element);
+    });
+    row.addEventListener('mouseleave', () => this.clearHover());
+
+    container.appendChild(row);
+
+    if (hasChildren && !isCollapsed) {
+      for (const child of children) {
+        this._buildElementTree(container, child, depth + 1);
+      }
+    }
+  }
+
+  _getElementTreeId(el) {
+    const parts = [];
+    let node = el;
+    while (node && node !== node.ownerDocument?.documentElement) {
+      const parent = node.parentElement;
+      if (parent) {
+        const idx = Array.from(parent.children).indexOf(node);
+        parts.unshift(idx);
+      }
+      node = parent;
+    }
+    return parts.join('-');
   }
 
   // Compact section wrapper
@@ -960,7 +1461,8 @@ export class EditorView {
       const btn = h('button', {
         className: `sp-tog-btn${current === o.v ? ' on' : ''}`,
         title: o.v,
-      }, o.l);
+      });
+      if (o.svg) btn.innerHTML = o.l; else btn.textContent = o.l;
       btn.addEventListener('click', () => {
         onChange(o.v);
         g.querySelectorAll('.sp-tog-btn').forEach(b => b.classList.remove('on'));
@@ -1351,9 +1853,12 @@ export class EditorView {
     b.appendChild(this._row(null, this._col('color')));
 
     const ta = this.getComputedStyle('textAlign') || 'left';
+    const al = (d) => `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">${d}</svg>`;
     b.appendChild(this._tog([
-      { l: '\u2261', v: 'left' }, { l: '\u2261', v: 'center' },
-      { l: '\u2261', v: 'right' }, { l: '\u2261', v: 'justify' },
+      { l: al('<line x1="2" y1="3.5" x2="12" y2="3.5"/><line x1="2" y1="7" x2="9" y2="7"/><line x1="2" y1="10.5" x2="11" y2="10.5"/>'), v: 'left', svg: true },
+      { l: al('<line x1="2" y1="3.5" x2="12" y2="3.5"/><line x1="3.5" y1="7" x2="10.5" y2="7"/><line x1="2.5" y1="10.5" x2="11.5" y2="10.5"/>'), v: 'center', svg: true },
+      { l: al('<line x1="2" y1="3.5" x2="12" y2="3.5"/><line x1="5" y1="7" x2="12" y2="7"/><line x1="3" y1="10.5" x2="12" y2="10.5"/>'), v: 'right', svg: true },
+      { l: al('<line x1="2" y1="3.5" x2="12" y2="3.5"/><line x1="2" y1="7" x2="12" y2="7"/><line x1="2" y1="10.5" x2="12" y2="10.5"/>'), v: 'justify', svg: true },
     ], ta, v => this.setStyle('textAlign', v)));
 
     return s;
@@ -1743,6 +2248,32 @@ export class EditorView {
 
     // Build layers
     this.buildLayersTree(doc.body);
+
+    // Re-inject data-wia-id attributes for override CSS selectors
+    this._restoreWiaIds(doc);
+  }
+
+  // Re-apply data-wia-id attributes that wia-overrides.css targets
+  _restoreWiaIds(doc) {
+    if (!doc) return;
+    try {
+      for (const sheet of doc.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch { continue; }
+        const href = sheet.href || '';
+        if (!href.includes('wia-overrides')) continue;
+        for (const rule of rules) {
+          if (rule.type !== 1) continue;
+          const match = rule.selectorText?.match(/\[data-wia-id="([^"]+)"\]/);
+          if (!match) continue;
+          const wiaId = match[1];
+          // Already has this attribute somewhere? skip
+          if (doc.querySelector(`[data-wia-id="${wiaId}"]`)) continue;
+          // Try to find the element by the rest of the selector (without the wia-id part)
+          // If we can't, the override is orphaned — it won't apply but that's ok
+        }
+      }
+    } catch {}
   }
 
   // Track navigation in the iframe (navigate mode)
@@ -1801,7 +2332,7 @@ export class EditorView {
     this.selectedElement = element;
     this.showSelection();
     this.updateBreadcrumb(element);
-    this.refreshRightPanel();
+    this.refreshRightPanel(true);
     this.highlightLayer(element);
     this.updateChatContext();
   }
@@ -2028,11 +2559,26 @@ export class EditorView {
     if (prop === 'display') this.refreshRightPanel();
   }
 
-  refreshRightPanel() {
+  refreshRightPanel(scrollToSelected) {
+    const oldTree = this.panelRight.querySelector('.el-tree');
+    const prevScroll = oldTree ? oldTree.scrollTop : 0;
+
     const parent = this.panelRight.parentElement;
     const newPanel = this.renderRightPanel();
     parent.replaceChild(newPanel, this.panelRight);
     this.panelRight = newPanel;
+
+    const newTree = this.panelRight.querySelector('.el-tree');
+    if (newTree) {
+      if (scrollToSelected) {
+        requestAnimationFrame(() => {
+          const sel = newTree.querySelector('.el-row.selected');
+          if (sel) sel.scrollIntoView({ block: 'nearest' });
+        });
+      } else {
+        newTree.scrollTop = prevScroll;
+      }
+    }
   }
 
   // Layers tree
@@ -2087,19 +2633,55 @@ export class EditorView {
 
   // Text editing
   startTextEdit(element) {
+    const originalText = element.textContent;
+
     element.contentEditable = true;
     element.focus();
     element.style.outline = 'none';
 
-    const finish = () => {
+    const finish = async () => {
       element.contentEditable = false;
       element.removeEventListener('blur', finish);
       element.removeEventListener('keydown', onKey);
-      // TODO: write back to HTML file
+
+      const newText = element.textContent;
+      if (newText === originalText) return;
+
+      // Try direct file replacement first (zero tokens, instant)
+      const files = this.files.filter(f =>
+        ['html', 'jsx', 'tsx', 'js', 'ts', 'vue', 'svelte'].includes(f.type)
+      );
+      let replaced = false;
+      for (const file of files) {
+        try {
+          await api.post('/api/writeback/text-replace', {
+            filePath: file.path,
+            oldText: originalText,
+            newText: newText,
+          });
+          replaced = true;
+          this._showQuickFeedback(`Text updated in ${file.relativePath}`);
+          break;
+        } catch {
+          continue;
+        }
+      }
+
+      // Fallback to AI if direct replacement failed
+      if (!replaced) {
+        if (this.devServer) {
+          this._showQuickFeedback('Direct edit failed — sending to AI...');
+          const desc = this._describeElement(element);
+          this.sendChatMessage(`Change the text of ${desc} from "${originalText.slice(0, 60)}" to "${newText.slice(0, 200)}"`);
+        } else {
+          this._showQuickFeedback('Text not found in source files');
+        }
+      }
     };
 
     const onKey = (e) => {
       if (e.key === 'Escape') {
+        element.textContent = originalText;
         finish();
       }
     };
@@ -2154,41 +2736,113 @@ export class EditorView {
     });
   }
 
+  _updateModeBtn() {
+    const icons = {
+      auto: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M13 2l-2 2 2 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+      ask: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" stroke="currentColor" stroke-width="2"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r=".5" fill="currentColor"/></svg>',
+      plan: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 12h8M8 8h8M8 16h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    };
+    const labels = { auto: 'Edit automatically', ask: 'Ask before edits', plan: 'Plan mode' };
+    const cls = this._chatEditMode === 'plan' ? ' chat-mode-btn--plan' : '';
+    this._chatModeBtn.className = 'chat-mode-btn' + cls;
+    this._chatModeBtn.innerHTML = `${icons[this._chatEditMode]}<span>${labels[this._chatEditMode]}</span>`;
+  }
+
+  _updateAttachPreview() {
+    if (!this._chatAttachedFiles.length) {
+      this._chatAttachPreview.style.display = 'none';
+      return;
+    }
+    this._chatAttachPreview.style.display = 'flex';
+    this._chatAttachPreview.innerHTML = this._chatAttachedFiles
+      .map((f, i) =>
+        `<span class="chat-attach-chip">${f.name}<button data-idx="${i}">&times;</button></span>`
+      ).join('');
+    this._chatAttachPreview.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._chatAttachedFiles.splice(parseInt(btn.dataset.idx), 1);
+        this._updateAttachPreview();
+      });
+    });
+  }
+
+  _updateCostDisplay(cost) {
+    if (!this._chatContextLabel) return;
+    this._sessionCost = (this._sessionCost || 0) + cost;
+    const display = this._sessionCost < 0.01
+      ? `$${this._sessionCost.toFixed(4)}`
+      : `$${this._sessionCost.toFixed(2)}`;
+    this._chatContextLabel.querySelector('span').textContent = display;
+  }
+
   // Simple markdown renderer — no external deps
   _renderMarkdown(text) {
     if (!text) return '';
-    // Escape HTML
-    let html = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    // Code blocks (triple backtick)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
-      `<pre class="chat-code-block"><code>${code.replace(/\n$/, '')}</code></pre>`
-    );
+    // Extract code blocks first to protect them
+    const codeBlocks = [];
+    let safe = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(`<pre class="chat-code-block"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+      return `\n%%CODEBLOCK_${idx}%%\n`;
+    });
 
+    // Split into blocks by double newlines
+    const blocks = safe.split(/\n{2,}/);
+    const out = [];
+
+    for (const block of blocks) {
+      const trimmed = block.trim();
+      if (!trimmed) continue;
+
+      // Code block placeholder
+      const cbMatch = trimmed.match(/^%%CODEBLOCK_(\d+)%%$/);
+      if (cbMatch) {
+        out.push(codeBlocks[parseInt(cbMatch[1])]);
+        continue;
+      }
+
+      // Headings
+      const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+      if (headingMatch) {
+        const level = headingMatch[1].length;
+        out.push(`<h${level} class="chat-heading chat-h${level}">${this._inlineMarkdown(esc(headingMatch[2]))}</h${level}>`);
+        continue;
+      }
+
+      // List block (- or 1.)
+      const lines = trimmed.split('\n');
+      if (lines[0].match(/^\s*[-*]\s/) || lines[0].match(/^\s*\d+\.\s/)) {
+        const isOrdered = !!lines[0].match(/^\s*\d+\.\s/);
+        const tag = isOrdered ? 'ol' : 'ul';
+        const items = lines
+          .filter(l => l.trim())
+          .map(l => {
+            const content = l.replace(/^\s*[-*]\s+/, '').replace(/^\s*\d+\.\s+/, '');
+            return `<li>${this._inlineMarkdown(esc(content))}</li>`;
+          })
+          .join('');
+        out.push(`<${tag} class="chat-list">${items}</${tag}>`);
+        continue;
+      }
+
+      // Regular paragraph
+      const escaped = esc(trimmed);
+      const withBr = escaped.replace(/\n/g, '<br>');
+      out.push(`<p>${this._inlineMarkdown(withBr)}</p>`);
+    }
+
+    return out.join('');
+  }
+
+  _inlineMarkdown(html) {
     // Inline code
     html = html.replace(/`([^`\n]+)`/g, '<code class="chat-code-inline">$1</code>');
-
     // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
     // Italic
     html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-    // Double newlines → paragraph break
-    html = html.replace(/\n\n/g, '</p><p>');
-
-    // Single newlines → <br>
-    html = html.replace(/\n/g, '<br>');
-
-    // Wrap in paragraph
-    html = `<p>${html}</p>`;
-
-    // Clean empty paragraphs
-    html = html.replace(/<p><\/p>/g, '');
-
     return html;
   }
 
@@ -2212,12 +2866,7 @@ export class EditorView {
     };
 
     if (this.selectedElement) {
-      context.selectedElement = {
-        tag: this.selectedElement.tagName?.toLowerCase(),
-        classes: this.selectedElement.className || '',
-        id: this.selectedElement.id || '',
-        html: this.selectedElement.outerHTML?.slice(0, 2000),
-      };
+      context.selectedElement = this._buildElementContext(this.selectedElement);
     }
 
     // Load current file contents for context
@@ -2236,16 +2885,166 @@ export class EditorView {
       this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
     };
 
+    // Thinking loader with rotating words + morphing icon
+    const thinkingWords = ['Thinking...', 'Reasoning...', 'Analyzing...', 'Working...', 'Coding...', 'Vibing...'];
+    let thinkingIdx = 0;
+    const thinkingEl = document.createElement('div');
+    thinkingEl.className = 'chat-thinking-loader';
+    // SVG sparkle with real path morphing (5-petal flower like VS Code)
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const sparkleSvg = document.createElementNS(svgNS, 'svg');
+    sparkleSvg.setAttribute('class', 'chat-sparkle-svg');
+    sparkleSvg.setAttribute('width', '16');
+    sparkleSvg.setAttribute('height', '16');
+    sparkleSvg.setAttribute('viewBox', '0 0 32 32');
+    sparkleSvg.setAttribute('fill', 'currentColor');
+    const sparklePath = document.createElementNS(svgNS, 'path');
+    sparklePath.setAttribute('class', 'chat-sparkle-path');
+    sparkleSvg.appendChild(sparklePath);
+
+    // 3-phase morph: dot → rounded flower → pointed star → dot (like VS Code)
+    const cx = 16, cy = 16, petalCount = 5;
+    const buildFlower = (outerR, bulge, innerR) => {
+      let d = '';
+      for (let i = 0; i < petalCount; i++) {
+        const angle = (Math.PI * 2 * i) / petalCount - Math.PI / 2;
+        const nextAngle = (Math.PI * 2 * (i + 1)) / petalCount - Math.PI / 2;
+        const midAngle = (angle + nextAngle) / 2;
+        const tipX = cx + Math.cos(angle) * outerR;
+        const tipY = cy + Math.sin(angle) * outerR;
+        const valleyX = cx + Math.cos(midAngle) * innerR;
+        const valleyY = cy + Math.sin(midAngle) * innerR;
+        const cp1x = cx + Math.cos(angle + 0.35) * bulge;
+        const cp1y = cy + Math.sin(angle + 0.35) * bulge;
+        const cp2x = cx + Math.cos(midAngle - 0.35) * bulge;
+        const cp2y = cy + Math.sin(midAngle - 0.35) * bulge;
+        if (i === 0) d += `M${tipX.toFixed(1)},${tipY.toFixed(1)}`;
+        d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${valleyX.toFixed(1)},${valleyY.toFixed(1)}`;
+        const nTipX = cx + Math.cos(nextAngle) * outerR;
+        const nTipY = cy + Math.sin(nextAngle) * outerR;
+        const cp3x = cx + Math.cos(midAngle + 0.35) * bulge;
+        const cp3y = cy + Math.sin(midAngle + 0.35) * bulge;
+        const cp4x = cx + Math.cos(nextAngle - 0.35) * bulge;
+        const cp4y = cy + Math.sin(nextAngle - 0.35) * bulge;
+        d += ` C${cp3x.toFixed(1)},${cp3y.toFixed(1)} ${cp4x.toFixed(1)},${cp4y.toFixed(1)} ${nTipX.toFixed(1)},${nTipY.toFixed(1)}`;
+      }
+      return d + 'Z';
+    };
+    const buildDot = (r) => `M${cx-r},${cy} a${r},${r} 0 1,0 ${r*2},0 a${r},${r} 0 1,0 -${r*2},0Z`;
+
+    // Phase 0: dot → flower (grow + round petals)
+    // Phase 1: flower → star (petals sharpen)
+    // Phase 2: star → dot (shrink back)
+    let bloomT = 0;
+    const bloomSpeed = 0.014;
+    const steps = 4; // fewer steps = more brutal jumps between shapes
+    const morphInterval = setInterval(() => {
+      bloomT = (bloomT + bloomSpeed) % 1;
+
+      let phase, t;
+      if (bloomT < 0.33) {
+        phase = 0; t = bloomT / 0.33;
+      } else if (bloomT < 0.66) {
+        phase = 1; t = (bloomT - 0.33) / 0.33;
+      } else {
+        phase = 2; t = (bloomT - 0.66) / 0.34;
+      }
+      // Stepped/quantized easing — retro saccadé effect
+      const ease = Math.floor(t * steps) / steps;
+
+      let path;
+      if (phase === 0) {
+        // Dot → pointed star
+        if (ease < 0.3) {
+          path = buildDot(4);
+        } else {
+          const p = (ease - 0.3) / 0.7;
+          path = buildFlower(5 + p * 6, 3 + p * 2, 2 + p * 1);
+        }
+      } else if (phase === 1) {
+        // Pointed star → rounded flower (smaller)
+        path = buildFlower(11, 5 + ease * 6, 3 + ease * 4);
+      } else {
+        // Rounded flower → dot
+        if (ease < 0.7) {
+          const p = ease / 0.7;
+          path = buildFlower(11 - p * 6, 11 - p * 8, 7 - p * 5);
+        } else {
+          path = buildDot(4);
+        }
+      }
+      sparklePath.setAttribute('d', path);
+    }, 30);
+
+    sparklePath.setAttribute('d', buildDot(4));
+    const wordSpan = document.createElement('span');
+    wordSpan.className = 'chat-thinking-word';
+    wordSpan.textContent = thinkingWords[0];
+    thinkingEl.appendChild(sparkleSvg);
+    thinkingEl.appendChild(wordSpan);
+    aiMsg.appendChild(thinkingEl);
+    scrollToBottom();
+
+    // Text scramble effect — letters replaced randomly one by one
+    const scrambleChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    let scrambleRAF = null;
+    const scrambleTo = (target) => {
+      const len = Math.max(wordSpan.textContent.length, target.length);
+      const resolved = new Array(len).fill(false);
+      const current = (wordSpan.textContent + ' '.repeat(len)).slice(0, len).split('');
+      let resolvedCount = 0;
+      const tick = () => {
+        // Each frame, randomly resolve 1-2 unresolved chars or scramble them
+        for (let i = 0; i < len; i++) {
+          if (resolved[i]) continue;
+          if (Math.random() < 0.08) {
+            // Resolve this character
+            current[i] = i < target.length ? target[i] : '';
+            resolved[i] = true;
+            resolvedCount++;
+          } else {
+            // Random scramble
+            current[i] = scrambleChars[Math.floor(Math.random() * scrambleChars.length)];
+          }
+        }
+        wordSpan.textContent = current.join('').trim();
+        if (resolvedCount < len) {
+          scrambleRAF = requestAnimationFrame(tick);
+        } else {
+          wordSpan.textContent = target;
+        }
+      };
+      if (scrambleRAF) cancelAnimationFrame(scrambleRAF);
+      scrambleRAF = requestAnimationFrame(tick);
+    };
+
+    const wordInterval = setInterval(() => {
+      thinkingIdx = (thinkingIdx + 1) % thinkingWords.length;
+      scrambleTo(thinkingWords[thinkingIdx]);
+    }, 2500);
+
+    const removeThinking = () => {
+      clearInterval(wordInterval);
+      clearInterval(morphInterval);
+      if (scrambleRAF) cancelAnimationFrame(scrambleRAF);
+      if (thinkingEl.parentNode) thinkingEl.remove();
+    };
+
+    // Move thinking loader to bottom of aiMsg (keeps it visible while tools stream)
+    const moveThinkingToBottom = () => {
+      if (thinkingEl.parentNode) aiMsg.appendChild(thinkingEl);
+    };
+
     try {
       // Attempt SSE streaming via SDK endpoint
       const response = await fetch('/api/ai/sdk/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, context, projectPath: this.projectPath }),
+        body: JSON.stringify({ prompt: text, context, projectPath: this.projectPath, sessionId: this._chatSessionId, editMode: this._chatEditMode }),
       });
 
       if (!response.ok) {
-        // Fallback to non-streaming endpoint
+        removeThinking();
         await this._sendChatFallback(text, context, aiMsg);
         scrollToBottom();
         return;
@@ -2257,7 +3056,14 @@ export class EditorView {
       let textAccumulator = '';
       let textDiv = null;
       let cursorSpan = null;
-      let pendingChanges = null;
+      let thinkingRemoved = false;
+
+      const ensureThinkingRemoved = () => {
+        if (!thinkingRemoved) {
+          removeThinking();
+          thinkingRemoved = true;
+        }
+      };
 
       // Add streaming cursor
       const ensureTextDiv = () => {
@@ -2284,7 +3090,6 @@ export class EditorView {
         }
       };
 
-      updateCursor();
       scrollToBottom();
 
       const toolTypeMap = {
@@ -2316,69 +3121,174 @@ export class EditorView {
             continue;
           }
 
+          // Close current thinking dropdown when switching to another event type
+          const closeThinking = () => {
+            const td = aiMsg.querySelector('.chat-thinking:last-of-type');
+            if (td) td._closed = true;
+          };
+
           if (data.type === 'text') {
+            closeThinking();
+            moveThinkingToBottom();
             textAccumulator += data.content || '';
             const td = ensureTextDiv();
             removeCursor();
             td.innerHTML = this._renderMarkdown(textAccumulator);
             updateCursor();
+            moveThinkingToBottom();
             scrollToBottom();
           } else if (data.type === 'tool_use') {
+            closeThinking();
+            moveThinkingToBottom();
+            // Finalize current text block before tool use
+            if (textDiv && textAccumulator) {
+              removeCursor();
+              textDiv.innerHTML = this._renderMarkdown(textAccumulator);
+              textDiv = null;
+              textAccumulator = '';
+            }
+
             const toolName = data.tool || data.name || '';
             const toolBase = toolName.split('/').pop().split('.').shift();
             const dotType = toolTypeMap[toolBase] || toolTypeMap[toolName] || 'search';
             const input = data.input || {};
-            const filePath = input.file_path || input.path || input.pattern || data.file_path || data.path || '';
+
+            // Get or create tool group (connected dots with vertical line)
+            const allGroups = aiMsg.querySelectorAll('.chat-tool-group');
+            let toolGroup = allGroups.length ? allGroups[allGroups.length - 1] : null;
+            // Break group only if there's real content (text, thinking block) between last group and end
+            let shouldBreak = !toolGroup;
+            if (toolGroup) {
+              let sib = toolGroup.nextElementSibling;
+              while (sib) {
+                if (!sib.classList.contains('chat-thinking-loader')) { shouldBreak = true; break; }
+                sib = sib.nextElementSibling;
+              }
+            }
+            if (shouldBreak) {
+              toolGroup = document.createElement('div');
+              toolGroup.className = 'chat-tool-group';
+              aiMsg.appendChild(toolGroup);
+            }
+
+            // Shorten path to filename + line info (like VS Code)
+            const actualPath = input.file_path || input.path || data.file_path || data.path || '';
+            const shortPath = actualPath ? actualPath.split('/').pop() : '';
+            let lineInfo = '';
+            if (input.offset || input.limit) {
+              const start = input.offset || 1;
+              const end = input.limit ? start + input.limit - 1 : '';
+              lineInfo = end ? ` (lines ${start}-${end})` : ` (line ${start})`;
+            }
+
+            // Build tool line label + detail
+            let toolLabel = shortPath + lineInfo;
+            let detail = '';
+            if (toolBase === 'Bash' || toolName === 'Bash') {
+              toolLabel = '';
+              detail = input.command || '';
+            } else if (toolBase === 'Grep' || toolName === 'Grep') {
+              toolLabel = input.pattern ? `"${input.pattern}"` : '';
+              detail = shortPath ? `in ${shortPath}` : '';
+            } else if (toolBase === 'Glob' || toolName === 'Glob') {
+              toolLabel = input.pattern || shortPath || '';
+            }
 
             const toolEl = document.createElement('div');
             toolEl.className = 'chat-tool-use';
-            toolEl.innerHTML =
-              `<span class="chat-tool-dot chat-tool-dot--${dotType}"></span>` +
-              `<span class="chat-tool-name">${toolBase || toolName}</span>` +
-              `<span class="chat-tool-path">${filePath}</span>`;
-            aiMsg.appendChild(toolEl);
+            const contentWrap = document.createElement('div');
+            contentWrap.className = 'chat-tool-content';
+            contentWrap.innerHTML =
+              `<div class="chat-tool-header"><span class="chat-tool-name">${toolBase || toolName}</span>` +
+              `<span class="chat-tool-path">${toolLabel}</span></div>`;
+            toolEl.innerHTML = `<span class="chat-tool-dot chat-tool-dot--${dotType}"></span>`;
+            toolEl.appendChild(contentWrap);
+            toolGroup.appendChild(toolEl);
 
-            // Move text div + cursor after tool uses so text continues below
-            if (textDiv) {
-              aiMsg.appendChild(textDiv);
-              updateCursor();
+            // Add detail line (bash command, search context, etc.)
+            if (detail) {
+              const detailEl = document.createElement('div');
+              detailEl.className = 'chat-tool-detail';
+              detailEl.textContent = detail.length > 120 ? detail.slice(0, 120) + '...' : detail;
+              contentWrap.appendChild(detailEl);
             }
+
+            // Add code preview for Edit/Write
+            if ((toolBase === 'Edit' || toolBase === 'Write') && (input.new_string || input.content)) {
+              const preview = input.new_string || input.content || '';
+              if (preview.length > 0) {
+                const previewEl = document.createElement('details');
+                previewEl.className = 'chat-tool-code-preview';
+                const previewLines = preview.split('\n').length;
+                previewEl.innerHTML =
+                  `<summary>${previewLines} line${previewLines > 1 ? 's' : ''} changed</summary>` +
+                  `<pre class="chat-code-block">${preview.length > 500 ? preview.slice(0, 500) + '\n...' : preview}</pre>`;
+                contentWrap.appendChild(previewEl);
+              }
+            }
+
+            moveThinkingToBottom();
             scrollToBottom();
           } else if (data.type === 'thinking') {
-            const details = document.createElement('details');
-            details.className = 'chat-thinking';
-            const summary = document.createElement('summary');
-            summary.className = 'chat-thinking-header';
-            summary.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4"/></svg>Thinking`;
-            const content = document.createElement('div');
-            content.className = 'chat-thinking-content';
-            content.textContent = data.content || '';
-            details.appendChild(summary);
-            details.appendChild(content);
-            aiMsg.appendChild(details);
+            moveThinkingToBottom();
+            // Accumulate thinking chunks into a single dropdown
+            let thinkDetails = aiMsg.querySelector('.chat-thinking:last-of-type');
+            if (!thinkDetails || thinkDetails._closed) {
+              thinkDetails = document.createElement('details');
+              thinkDetails.className = 'chat-thinking';
+              const summary = document.createElement('summary');
+              summary.className = 'chat-thinking-header';
+              summary.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4"/></svg>Thinking`;
+              const content = document.createElement('div');
+              content.className = 'chat-thinking-content';
+              thinkDetails.appendChild(summary);
+              thinkDetails.appendChild(content);
+              aiMsg.appendChild(thinkDetails);
+            }
+            const thinkContent = thinkDetails.querySelector('.chat-thinking-content');
+            thinkContent.textContent += data.content || '';
+            scrollToBottom();
+          } else if (data.type === 'changes_applied') {
+            // Auto mode — changes already written by CLI, just show confirmation
+            const appliedEl = h('div', { className: 'chat-changes-applied' },
+              `${(data.changes || []).length} fichier(s) modifie(s)`,
+            );
+            aiMsg.appendChild(appliedEl);
             scrollToBottom();
           } else if (data.type === 'changes_pending') {
-            pendingChanges = data.changes || [];
             const actions = h('div', { className: 'chat-actions' },
               h('button', {
                 className: 'chat-btn-accept',
-                onClick: () => this.applyAIChanges(pendingChanges, actions),
+                onClick: () => this._acceptChanges(actions),
               }, 'Accept'),
               h('button', {
                 className: 'chat-btn-reject',
-                onClick: () => actions.remove(),
+                onClick: () => this._rejectChanges(actions),
               }, 'Reject'),
             );
             aiMsg.appendChild(actions);
             scrollToBottom();
           } else if (data.type === 'done') {
+            ensureThinkingRemoved();
             removeCursor();
+            if (data.sessionId) this._chatSessionId = data.sessionId;
+            if (data.cost != null) this._updateCostDisplay(data.cost);
             scrollToBottom();
           } else if (data.type === 'error') {
+            ensureThinkingRemoved();
             removeCursor();
             const errDiv = document.createElement('div');
-            errDiv.className = 'chat-text';
-            errDiv.textContent = data.content || data.message || 'An error occurred';
+            errDiv.className = 'chat-error';
+            const errText = data.error || data.content || data.message || 'An error occurred';
+            console.error('[Chat Error]', data.errorCode, errText);
+            // Show clean message for known errors
+            if (data.errorCode === 'rate_limit' || errText.includes('already in use')) {
+              errDiv.textContent = 'Limite API atteinte — reessayez plus tard.';
+            } else if (data.errorCode === 'auth') {
+              errDiv.textContent = 'Claude CLI non authentifie. Lancez `claude auth login`.';
+            } else {
+              errDiv.textContent = errText;
+            }
             aiMsg.appendChild(errDiv);
             scrollToBottom();
           }
@@ -2386,7 +3296,8 @@ export class EditorView {
         }
       }
 
-      // Cleanup: ensure cursor is removed when stream ends
+      // Cleanup: ensure cursor + thinking removed when stream ends
+      removeThinking();
       removeCursor();
 
       // If we got text but stream ended without 'done' event, finalize
@@ -2395,6 +3306,7 @@ export class EditorView {
       }
     } catch (err) {
       // Network error or stream failure — fallback
+      removeThinking();
       console.warn('SSE streaming failed, falling back:', err.message);
       aiMsg.innerHTML = '';
       await this._sendChatFallback(text, context, aiMsg);
@@ -2427,11 +3339,11 @@ export class EditorView {
         const actions = h('div', { className: 'chat-actions' },
           h('button', {
             className: 'chat-btn-accept',
-            onClick: () => this.applyAIChanges(result.changes, actions),
+            onClick: () => this._acceptChanges(actions),
           }, 'Accept'),
           h('button', {
             className: 'chat-btn-reject',
-            onClick: () => actions.remove(),
+            onClick: () => this._rejectChanges(actions),
           }, 'Reject'),
         );
         aiMsg.appendChild(actions);
@@ -2443,29 +3355,38 @@ export class EditorView {
     }
   }
 
-  async applyAIChanges(changes, actionsEl) {
-    for (const change of changes) {
-      const filePath = `${this.projectPath}/${change.file}`;
-      try {
-        const { content } = await api.get(`/api/files/read?path=${encodeURIComponent(filePath)}`);
-        let newContent = content;
-
-        if (change.action === 'replace') {
-          newContent = content.replace(change.search, change.replace);
-        } else if (change.action === 'insert' && change.after) {
-          const idx = content.indexOf(change.after);
-          if (idx !== -1) {
-            newContent = content.slice(0, idx + change.after.length) + '\n' + change.content + content.slice(idx + change.after.length);
-          }
-        }
-
-        await api.post('/api/files/write', { path: filePath, content: newContent });
-      } catch (err) {
-        console.error('Failed to apply change:', err);
+  async _acceptChanges(actionsEl) {
+    try {
+      const res = await api.post('/api/ai/sdk/accept', {
+        projectPath: this.projectPath,
+        sessionId: this._chatSessionId,
+      });
+      if (res.accepted) {
+        actionsEl.innerHTML = '';
+        actionsEl.className = 'chat-changes-applied';
+        actionsEl.textContent = 'Changes accepted';
       }
+    } catch (err) {
+      console.error('Accept failed:', err);
+      actionsEl.innerHTML = '';
+      actionsEl.className = 'chat-changes-applied';
+      actionsEl.textContent = 'Error: ' + err.message;
     }
-    actionsEl.remove();
     // Canvas will auto-refresh via file watcher
+  }
+
+  async _rejectChanges(actionsEl) {
+    try {
+      await api.post('/api/ai/sdk/reject', {
+        projectPath: this.projectPath,
+        sessionId: this._chatSessionId,
+      });
+    } catch (err) {
+      console.error('Reject failed:', err);
+    }
+    actionsEl.innerHTML = '';
+    actionsEl.className = 'chat-changes-applied';
+    actionsEl.textContent = 'Changes rejected';
   }
 
   // Writeback — save style change to CSS file (debounced, error-protected)
@@ -2505,20 +3426,46 @@ export class EditorView {
       filePath = source.filePath;
       selector = source.selector;
     } else {
-      // 2. Fallback: use basic selector + first safe CSS file
-      const classes = (element.className || '').split(/\s+/).filter(Boolean);
-      selector = classes.length > 0 ? `.${classes[0]}` : element.tagName.toLowerCase();
-      const cssFile = this._getWritebackCSSFile();
-      if (!cssFile) return;
-      filePath = cssFile.path;
+      // 1b. Check if this property is actually inherited/caused by a parent
+      const doc = this.iframe?.contentDocument;
+      const INHERITABLE = new Set([
+        'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+        'line-height', 'text-align', 'text-transform', 'letter-spacing',
+        'word-spacing', 'white-space', 'visibility', 'cursor', 'direction',
+      ]);
+      if (doc && INHERITABLE.has(cssProp)) {
+        const inherited = this._traceInheritedStyle(element, cssProp, doc);
+        if (inherited && inherited.file) {
+          // The style comes from a parent — edit the parent's rule instead
+          filePath = inherited.file;
+          selector = inherited.selector;
+          // Skip to the api.post below
+        }
+      }
+
+      // 2. Fallback: scoped selector + dedicated override file
+      if (!filePath) {
+        const baseSelector = this._buildScopedSelector(element);
+        // Boost specificity so overrides always win over source CSS
+        // :where(body):not(#_) adds (1,0,1) without changing what it targets
+        // This beats most real-world selectors (.parent .child = 0,2,0)
+        selector = `:where(body):not(#_) ${baseSelector}`;
+        const overrideFile = await this._ensureOverrideCSS();
+        if (!overrideFile) return;
+        filePath = overrideFile;
+      }
     }
+
+    // Resolve raw value to design token if possible
+    const tokenValue = this._resolveToToken(cssProp, value);
+    const finalValue = tokenValue || value;
 
     try {
       await api.post('/api/writeback/css', {
         filePath,
         selector,
         prop: cssProp,
-        value,
+        value: finalValue,
         mediaQuery,
       });
       this._writebackBroken = false;
@@ -2528,6 +3475,407 @@ export class EditorView {
         this._writebackBroken = true;
         console.warn('CSS writeback paused:', err.message);
       }
+    }
+  }
+
+  // ── Rich element context for AI chat ──────────────────────────────────────
+  _buildElementContext(element) {
+    const doc = this.iframe?.contentDocument;
+    const tag = element.tagName?.toLowerCase() || '';
+    const classes = (typeof element.className === 'string' ? element.className : '').split(/\s+/).filter(Boolean);
+    const id = element.id || '';
+
+    // Build selector
+    const selector = id ? `${tag}#${id}` : classes.length ? `${tag}.${classes.join('.')}` : tag;
+
+    // Source file
+    const sourceFile = this.activePage?.relativePath || null;
+
+    // Computed styles — only the ones useful for visual editing
+    const TRACKED = [
+      'display', 'flex-direction', 'justify-content', 'align-items', 'flex-wrap', 'gap',
+      'width', 'height', 'max-width', 'min-height',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'font-family', 'font-size', 'font-weight', 'line-height', 'text-align', 'color',
+      'background-color', 'border', 'border-radius', 'opacity',
+      'position', 'top', 'right', 'bottom', 'left', 'z-index',
+      'overflow', 'box-sizing',
+    ];
+    const INHERITABLE = new Set([
+      'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+      'line-height', 'text-align', 'text-transform', 'letter-spacing',
+      'word-spacing', 'white-space', 'visibility', 'cursor', 'direction',
+    ]);
+
+    const styles = {};
+    if (doc) {
+      const computed = getComputedStyle(element);
+      const ownRules = this._collectMatchingRules(element, doc);
+
+      for (const prop of TRACKED) {
+        const val = computed.getPropertyValue(prop).trim();
+        if (!val) continue;
+
+        const own = ownRules.get(prop);
+        if (own) {
+          // Property is set directly on this element via a CSS rule
+          styles[prop] = { value: own.rawValue || val, source: 'own', file: own.file, selector: own.selector };
+        } else if (INHERITABLE.has(prop)) {
+          // Check if inherited from a parent
+          const inherited = this._traceInheritedStyle(element, prop, doc);
+          if (inherited) {
+            styles[prop] = { value: val, source: 'inherited', from: inherited.selector, file: inherited.file };
+          } else {
+            styles[prop] = { value: val, source: 'default' };
+          }
+        } else {
+          styles[prop] = { value: val, source: 'default' };
+        }
+      }
+    }
+
+    // Parent context (layout info)
+    let parentCtx = null;
+    const parent = element.parentElement;
+    if (parent && parent !== doc?.body && parent !== doc?.documentElement) {
+      const pTag = parent.tagName?.toLowerCase() || '';
+      const pClasses = (typeof parent.className === 'string' ? parent.className : '').split(/\s+/).filter(Boolean);
+      const pId = parent.id || '';
+      const pSel = pId ? `${pTag}#${pId}` : pClasses.length ? `${pTag}.${pClasses[0]}` : pTag;
+      const pComp = getComputedStyle(parent);
+      parentCtx = {
+        selector: pSel,
+        display: pComp.display,
+        flexDirection: pComp.flexDirection,
+        justifyContent: pComp.justifyContent,
+        alignItems: pComp.alignItems,
+        gap: pComp.gap,
+        paddingTop: pComp.paddingTop,
+        paddingRight: pComp.paddingRight,
+        paddingBottom: pComp.paddingBottom,
+        paddingLeft: pComp.paddingLeft,
+      };
+    }
+
+    // CSS custom properties in use on this element
+    const customProps = {};
+    if (doc) {
+      const ownRules = this._collectMatchingRules(element, doc);
+      for (const [, info] of ownRules) {
+        if (info.rawValue?.includes('var(--')) {
+          const matches = info.rawValue.match(/var\(--[^)]+\)/g);
+          if (matches) {
+            for (const m of matches) {
+              const varName = m.slice(4, -1); // --foo-bar
+              const resolved = getComputedStyle(doc.documentElement).getPropertyValue(varName).trim();
+              customProps[varName] = resolved;
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      tag,
+      selector,
+      classes: classes.join(' '),
+      id,
+      sourceFile,
+      html: element.outerHTML?.slice(0, 1500),
+      styles,
+      parent: parentCtx,
+      customProperties: Object.keys(customProps).length ? customProps : undefined,
+    };
+  }
+
+  // Collect all CSS rules matching an element → Map<prop, { selector, file, rawValue }>
+  _collectMatchingRules(element, doc) {
+    const map = new Map();
+    try {
+      for (const sheet of doc.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch { continue; }
+        const filePath = this._resolveSheetPath(sheet);
+        for (const rule of rules) {
+          if (rule.type !== 1) continue;
+          try { if (!element.matches(rule.selectorText)) continue; } catch { continue; }
+          for (let i = 0; i < rule.style.length; i++) {
+            const prop = rule.style[i];
+            map.set(prop, {
+              selector: rule.selectorText,
+              file: filePath,
+              rawValue: rule.style.getPropertyValue(prop).trim(),
+            });
+          }
+        }
+      }
+    } catch {}
+    return map;
+  }
+
+  // Walk up the DOM to find where an inheritable property is defined
+  _traceInheritedStyle(element, prop, doc) {
+    let current = element.parentElement;
+    while (current && current !== doc.body && current !== doc.documentElement) {
+      const rules = this._collectMatchingRules(current, doc);
+      if (rules.has(prop)) {
+        const info = rules.get(prop);
+        const tag = current.tagName?.toLowerCase() || '';
+        const cls = (typeof current.className === 'string' ? current.className : '').split(/\s+/).filter(Boolean);
+        const id = current.id;
+        return {
+          selector: id ? `${tag}#${id}` : cls.length ? `${tag}.${cls[0]}` : tag,
+          file: info.file,
+          rawValue: info.rawValue,
+        };
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  // ── Design token resolution ─────────────────────────────────────────────
+
+  // Scan all CSS custom properties in the project → Map<normalizedValue, [{variable, rawValue, resolvedValue}]>
+  _scanDesignTokens() {
+    const doc = this.iframe?.contentDocument;
+    if (!doc) return;
+
+    this._designTokens = new Map();
+    this._tokenScanTime = Date.now();
+
+    // Canvas for color normalization
+    if (!this._colorCanvas) {
+      this._colorCanvas = document.createElement('canvas');
+      this._colorCanvas.width = 1;
+      this._colorCanvas.height = 1;
+      this._colorCtx = this._colorCanvas.getContext('2d');
+    }
+
+    const computed = getComputedStyle(doc.documentElement);
+
+    try {
+      for (const sheet of doc.styleSheets) {
+        let rules;
+        try { rules = sheet.cssRules; } catch { continue; }
+
+        for (const rule of rules) {
+          if (rule.type !== 1) continue;
+          for (let i = 0; i < rule.style.length; i++) {
+            const prop = rule.style[i];
+            if (!prop.startsWith('--')) continue;
+
+            const rawValue = rule.style.getPropertyValue(prop).trim();
+            const resolvedValue = computed.getPropertyValue(prop).trim();
+            const normalized = this._normalizeTokenValue(resolvedValue);
+
+            if (!this._designTokens.has(normalized)) {
+              this._designTokens.set(normalized, []);
+            }
+            this._designTokens.get(normalized).push({
+              variable: prop,
+              rawValue,
+              resolvedValue,
+              selector: rule.selectorText,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Design token scan failed:', e);
+    }
+  }
+
+  // Normalize a CSS value for token matching
+  _normalizeTokenValue(value) {
+    if (!value) return '';
+    // Try to normalize as color
+    const asColor = this._normalizeColor(value);
+    if (asColor) return asColor;
+    // Trim whitespace for other values
+    return value.trim().toLowerCase();
+  }
+
+  // Normalize any CSS color to lowercase 6-digit hex (returns null if not a color)
+  _normalizeColor(value) {
+    if (!value || value === 'transparent' || value === 'inherit' || value === 'initial') return null;
+    try {
+      const ctx = this._colorCtx;
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = '#000000'; // reset
+      ctx.fillStyle = value;
+      const set = ctx.fillStyle;
+      // If fillStyle didn't change from reset, it's not a valid color
+      // (unless value was actually black)
+      if (set === '#000000' && value.trim().toLowerCase() !== '#000000' && value.trim().toLowerCase() !== 'black'
+        && value.trim().toLowerCase() !== '#000' && !value.trim().toLowerCase().startsWith('rgb(0')) {
+        return null;
+      }
+      // ctx.fillStyle returns #rrggbb or rgba() for alpha colors
+      if (set.startsWith('#')) return set.toLowerCase();
+      // Handle rgba
+      if (set.startsWith('rgb')) {
+        ctx.fillRect(0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Resolve a raw CSS value to a design token if one matches
+  _resolveToToken(prop, rawValue) {
+    // Rescan tokens periodically (every 30s) or if not scanned yet
+    if (!this._designTokens || (Date.now() - (this._tokenScanTime || 0)) > 30000) {
+      this._scanDesignTokens();
+    }
+    if (!this._designTokens?.size) return null;
+
+    const normalized = this._normalizeTokenValue(rawValue);
+    if (!normalized) return null;
+
+    const tokens = this._designTokens.get(normalized);
+    if (!tokens?.length) return null;
+
+    // Rank: prefer tokens whose name relates to the property
+    const hints = {
+      'color': ['text', 'color', 'fg', 'foreground'],
+      'background-color': ['bg', 'background', 'surface', 'fill'],
+      'background': ['bg', 'background', 'surface'],
+      'border-color': ['border', 'stroke', 'outline'],
+      'gap': ['space', 'gap'],
+      'padding-top': ['space', 'padding', 'pad'],
+      'padding-right': ['space', 'padding', 'pad'],
+      'padding-bottom': ['space', 'padding', 'pad'],
+      'padding-left': ['space', 'padding', 'pad'],
+      'margin-top': ['space', 'margin'],
+      'margin-right': ['space', 'margin'],
+      'margin-bottom': ['space', 'margin'],
+      'margin-left': ['space', 'margin'],
+      'border-radius': ['radius', 'round', 'corner'],
+      'font-family': ['font', 'family', 'typeface'],
+      'font-size': ['font-size', 'text-size', 'size'],
+    };
+
+    const propHints = hints[prop] || [];
+    const ranked = [...tokens].sort((a, b) => {
+      const aMatch = propHints.some(h => a.variable.toLowerCase().includes(h)) ? 1 : 0;
+      const bMatch = propHints.some(h => b.variable.toLowerCase().includes(h)) ? 1 : 0;
+      return bMatch - aMatch;
+    });
+
+    return `var(${ranked[0].variable})`;
+  }
+
+  // ── Scoped selector + override file ──────────────────────────────────────
+
+  // Build a scoped CSS selector — never bare tag names
+  _buildScopedSelector(element) {
+    const doc = this.iframe?.contentDocument;
+    if (!doc) return element.tagName.toLowerCase();
+
+    // 1. Element has an id → use it
+    if (element.id) return `#${element.id}`;
+
+    const tag = element.tagName.toLowerCase();
+    const classes = (typeof element.className === 'string' ? element.className : '')
+      .split(/\s+/).filter(Boolean);
+
+    // 2. Element has a unique class
+    for (const cls of classes) {
+      try {
+        if (doc.querySelectorAll(`.${cls}`).length === 1) return `.${cls}`;
+      } catch { continue; }
+    }
+
+    // 3. Element has a non-unique class → scope with nearest unique ancestor
+    if (classes.length > 0) {
+      const ancestor = this._findUniqueAncestor(element, doc);
+      if (ancestor) return `${ancestor} .${classes[0]}`;
+      // No unique ancestor — use direct child combinator path
+      const path = this._buildChildPath(element, doc);
+      if (path) return path;
+      return `.${classes[0]}`;
+    }
+
+    // 4. No class at all → add data-wia-id attribute
+    const wiaId = 'wia-' + Math.random().toString(36).slice(2, 8);
+    element.setAttribute('data-wia-id', wiaId);
+    return `[data-wia-id="${wiaId}"]`;
+  }
+
+  // Find nearest ancestor with a unique id or class
+  _findUniqueAncestor(element, doc) {
+    let current = element.parentElement;
+    while (current && current !== doc.body && current !== doc.documentElement) {
+      if (current.id) return `#${current.id}`;
+      const cls = (typeof current.className === 'string' ? current.className : '')
+        .split(/\s+/).filter(Boolean);
+      for (const c of cls) {
+        try {
+          if (doc.querySelectorAll(`.${c}`).length === 1) return `.${c}`;
+        } catch { continue; }
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  // Build a child-combinator path from unique ancestor: .parent > :nth-child(n)
+  _buildChildPath(element, doc) {
+    const parts = [];
+    let current = element;
+    let depth = 0;
+    while (current && current !== doc.body && depth < 4) {
+      const parent = current.parentElement;
+      if (!parent) break;
+      // Find nth-child index
+      const siblings = Array.from(parent.children);
+      const idx = siblings.indexOf(current) + 1;
+      parts.unshift(`:nth-child(${idx})`);
+      // Check if parent has a unique selector
+      if (parent.id) { parts.unshift(`#${parent.id}`); return parts.join(' > '); }
+      const cls = (typeof parent.className === 'string' ? parent.className : '')
+        .split(/\s+/).filter(Boolean);
+      for (const c of cls) {
+        try {
+          if (doc.querySelectorAll(`.${c}`).length === 1) {
+            parts.unshift(`.${c}`);
+            return parts.join(' > ');
+          }
+        } catch { continue; }
+      }
+      current = parent;
+      depth++;
+    }
+    return null;
+  }
+
+  // Ensure wia-overrides.css exists and is linked — returns absolute path
+  async _ensureOverrideCSS() {
+    if (this._overrideCSSPath) return this._overrideCSSPath;
+    try {
+      const data = await api.post('/api/writeback/ensure-override-css', {
+        projectDir: this.projectPath,
+        htmlFile: this.activePage?.path || null,
+        isFramework: !!this.devServer,
+      });
+      this._overrideCSSPath = data.path;
+      // Inject into iframe if not already present
+      const doc = this.iframe?.contentDocument;
+      if (doc && !doc.querySelector('link[href*="wia-overrides"]')) {
+        const link = doc.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = data.relativePath || 'wia-overrides.css';
+        doc.head.appendChild(link);
+      }
+      return this._overrideCSSPath;
+    } catch (err) {
+      console.error('Failed to ensure override CSS:', err);
+      return null;
     }
   }
 
@@ -2749,6 +4097,24 @@ export class EditorView {
   }
 
   _addElement(item) {
+    // Framework projects: route through AI to modify source files
+    if (this.devServer) {
+      if (this._requireAIForFramework('Add element')) return;
+      const selCtx = this.selectedElement ? this._describeElement(this.selectedElement) : 'the end of the main component body';
+      let html = `<${item.tag}`;
+      if (item.attrs) for (const [k, v] of Object.entries(item.attrs)) html += v === true ? ` ${k}` : ` ${k}="${v}"`;
+      if (item.selfClosing) { html += ' />'; }
+      else {
+        html += '>';
+        if (item.children) for (const c of item.children) html += `<${c.tag}>${c.text || ''}</${c.tag}>`;
+        else if (item.text) html += item.text;
+        html += `</${item.tag}>`;
+      }
+      this.sendChatMessage(`Add this element inside ${selCtx}:\n${html}`);
+      this._closeAddPanel();
+      return;
+    }
+
     const doc = this.iframe?.contentDocument;
     if (!doc) return;
 
@@ -2781,12 +4147,51 @@ export class EditorView {
     // Select the new element
     this.selectElement(el);
 
-    // Close panel
+    this._closeAddPanel();
+  }
+
+  _closeAddPanel() {
     if (this._addPanel) {
       this._addPanel.remove();
       this._addPanel = null;
       this._toolAdd.classList.remove('active');
     }
+  }
+
+  // Describe an element briefly for AI prompts
+  _describeElement(el) {
+    const tag = el.tagName?.toLowerCase() || '';
+    const id = el.id ? `#${el.id}` : '';
+    const cls = (typeof el.className === 'string' ? el.className : '').split(/\s+/).filter(Boolean);
+    const clsStr = cls.length ? `.${cls[0]}` : '';
+    const text = el.textContent?.trim().slice(0, 40);
+    const desc = `${tag}${id}${clsStr}`;
+    return text ? `${desc} ("${text}")` : desc;
+  }
+
+  // Check if framework project can perform DOM ops (needs AI connected)
+  _requireAIForFramework(action) {
+    if (!this.devServer) return false; // static project — no AI needed
+    if (this._aiConnected) return false; // AI connected — good to go
+    // Framework project without AI — block and explain
+    this._showQuickFeedback(`${action} requires Claude — connect in the chat panel below`);
+    // Scroll chat panel into view / flash it
+    const chatHeader = this.el.querySelector('.chat-header');
+    if (chatHeader) {
+      chatHeader.classList.add('flash');
+      setTimeout(() => chatHeader.classList.remove('flash'), 1500);
+    }
+    return true; // blocked
+  }
+
+  // Ephemeral feedback message near the canvas
+  _showQuickFeedback(msg) {
+    const existing = this.el.querySelector('.wia-quick-feedback');
+    if (existing) existing.remove();
+
+    const el = h('div', { className: 'wia-quick-feedback' }, msg);
+    this.el.querySelector('.canvas-wrapper')?.appendChild(el);
+    setTimeout(() => el.remove(), 2500);
   }
 
   // Media panel
@@ -2799,6 +4204,7 @@ export class EditorView {
 
     this._mediaPanel = new MediaPanel({
       projectPath: this.projectPath,
+      isFramework: !!this.devServer,
       onInsert: (relativePath, type) => this._insertMedia(relativePath, type),
       onClose: () => {
         if (this._mediaPanel) {
@@ -2850,6 +4256,25 @@ export class EditorView {
 
   // Smart media insertion with contextual options
   _insertMedia(relativePath, type) {
+    // Framework projects: use public/ dir and route through AI
+    if (this.devServer) {
+      if (this._requireAIForFramework('Insert media')) return;
+      const mediaPath = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+      const sel = this.selectedElement;
+      const tag = type === 'video' ? `<video src="${mediaPath}" controls style={{ maxWidth: '100%' }} />` : `<img src="${mediaPath}" alt="" style={{ maxWidth: '100%' }} />`;
+      if (sel) {
+        const desc = this._describeElement(sel);
+        if (sel.tagName === 'IMG' && type === 'image') {
+          this.sendChatMessage(`Change the src of ${desc} to "${mediaPath}"`);
+        } else {
+          this.sendChatMessage(`Add ${tag} inside ${desc}`);
+        }
+      } else {
+        this.sendChatMessage(`Add ${tag} to the main component`);
+      }
+      return;
+    }
+
     const doc = this.iframe?.contentDocument;
     if (!doc) return;
 
@@ -3476,13 +4901,22 @@ export class EditorView {
     const tabContent = h('div', { className: 'git-tab-content' });
     let activeTab = 'changes';
 
+    // Helper to refresh status + current tab in-place
+    const refreshPanel = async () => {
+      try {
+        status = await api.get(q('/api/git/status'));
+      } catch { /* keep old status */ }
+      renderSyncBar();
+      await renderTab(activeTab);
+    };
+
     const renderTab = async (tab) => {
       activeTab = tab;
       tabs.querySelectorAll('.git-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
       tabContent.innerHTML = '';
 
       if (tab === 'changes') {
-        await this._renderGitChanges(tabContent, status, dir, overlay);
+        await this._renderGitChanges(tabContent, status, dir, refreshPanel);
       } else if (tab === 'history') {
         await this._renderGitHistory(tabContent, dir);
       } else if (tab === 'settings') {
@@ -3499,9 +4933,12 @@ export class EditorView {
     panel.appendChild(tabContent);
 
     // Sync bar (push/pull)
-    if (status.remote) {
+    let syncBarEl = null;
+    const renderSyncBar = () => {
+      if (syncBarEl) syncBarEl.remove();
+      if (!status.remote) return;
       const syncInfo = h('div', { className: 'git-sync-info' }, status.remote.replace('https://github.com/', '').replace('.git', ''));
-      const syncBar = h('div', { className: 'git-sync-bar' },
+      syncBarEl = h('div', { className: 'git-sync-bar' },
         syncInfo,
         h('div', { className: 'git-sync-badges' },
           status.ahead ? h('span', { className: 'git-sync-badge' }, `${status.ahead}\u2191`) : null,
@@ -3513,7 +4950,7 @@ export class EditorView {
             e.target.textContent = 'Pulling...';
             e.target.disabled = true;
             try { await api.post('/api/git/pull', { dir }); } catch (err) { syncInfo.textContent = err.message; }
-            overlay.remove(); this.showGitPanel();
+            await refreshPanel();
           },
         }, 'Pull'),
         h('button', {
@@ -3522,18 +4959,19 @@ export class EditorView {
             e.target.textContent = 'Pushing...';
             e.target.disabled = true;
             try { await api.post('/api/git/push', { dir }); } catch (err) { syncInfo.textContent = err.message; }
-            overlay.remove(); this.showGitPanel();
+            await refreshPanel();
           },
         }, 'Push'),
       );
-      panel.appendChild(syncBar);
-    }
+      panel.appendChild(syncBarEl);
+    };
+    renderSyncBar();
 
     // Render initial tab
     renderTab('changes');
   }
 
-  async _renderGitChanges(container, status, dir, overlay) {
+  async _renderGitChanges(container, status, dir, refreshPanel) {
     const allChanges = [
       ...status.modified.map(f => ({ name: f, status: 'M' })),
       ...status.created.map(f => ({ name: f, status: 'A' })),
@@ -3573,9 +5011,33 @@ export class EditorView {
         commitBtn.textContent = 'Committing...';
         try {
           const result = await api.post('/api/git/commit', { dir, message: msg });
-          statusMsg.textContent = `Committed ${result.commit}`;
-          // Refresh
-          setTimeout(() => { overlay.remove(); this.showGitPanel(); }, 600);
+          // Replace commit section with success + push prompt
+          commitSection.innerHTML = '';
+          const successRow = h('div', { className: 'git-commit-actions' },
+            h('div', { className: 'git-status-msg' }, `Committed ${result.commit}`),
+          );
+          if (status.remote) {
+            const pushBtn = h('button', {
+              className: 'git-btn git-btn-primary',
+              onClick: async () => {
+                pushBtn.disabled = true;
+                pushBtn.textContent = 'Pushing...';
+                try {
+                  await api.post('/api/git/push', { dir });
+                  pushBtn.textContent = 'Pushed';
+                  setTimeout(() => refreshPanel(), 500);
+                } catch (err) {
+                  pushBtn.textContent = 'Push';
+                  pushBtn.disabled = false;
+                  successRow.querySelector('.git-status-msg').textContent = err.message;
+                }
+              },
+            }, 'Push');
+            successRow.appendChild(pushBtn);
+          } else {
+            setTimeout(() => refreshPanel(), 600);
+          }
+          commitSection.appendChild(successRow);
         } catch (err) {
           statusMsg.textContent = err.message;
           commitBtn.disabled = false;
@@ -3584,13 +5046,14 @@ export class EditorView {
       },
     }, 'Commit');
 
-    container.appendChild(h('div', { className: 'git-commit-section' },
+    const commitSection = h('div', { className: 'git-commit-section' },
       commitInput,
       h('div', { className: 'git-commit-actions' },
         statusMsg,
         commitBtn,
       ),
-    ));
+    );
+    container.appendChild(commitSection);
 
     commitInput.focus();
   }
@@ -3836,14 +5299,32 @@ export class EditorView {
   // Element actions
   duplicateSelected() {
     if (!this.selectedElement) return;
+
+    if (this.devServer) {
+      if (this._requireAIForFramework('Duplicate')) return;
+      const desc = this._describeElement(this.selectedElement);
+      this.sendChatMessage(`Duplicate the element ${desc} (add an identical copy right after it in the source)`);
+      return;
+    }
+
     const clone = this.selectedElement.cloneNode(true);
     this.selectedElement.parentNode.insertBefore(clone, this.selectedElement.nextSibling);
     this.selectElement(clone);
-    // TODO: writeback to HTML
   }
 
   deleteSelected() {
     if (!this.selectedElement) return;
+
+    if (this.devServer) {
+      if (this._requireAIForFramework('Delete')) return;
+      const desc = this._describeElement(this.selectedElement);
+      this.sendChatMessage(`Remove the element ${desc} from the source code`);
+      this.selectedElement = null;
+      this.overlay.innerHTML = '';
+      this.refreshRightPanel();
+      return;
+    }
+
     const parent = this.selectedElement.parentNode;
     const el = this.selectedElement;
     this.pushUndo({
@@ -3854,7 +5335,6 @@ export class EditorView {
     this.selectedElement = null;
     this.overlay.innerHTML = '';
     this.refreshRightPanel();
-    // TODO: writeback to HTML
   }
 
   deselectAll() {
@@ -3898,6 +5378,7 @@ export class EditorView {
           this._termWrite(msg.data);
         }
         if (msg.type === 'terminal-ready') {
+          console.log('[terminal] ready:', msg);
           // PTY mode: shell prompt will appear naturally
           // Pipe mode: show a connection message
           if (!msg.pty && this._xterm) {

@@ -53,6 +53,8 @@ class App {
     this.root.innerHTML = '';
     this.state.currentProject = projectPath;
     sessionStorage.setItem('wia:project', projectPath);
+    // Notify server so path guard knows the active project
+    api.post('/api/state/project', { projectPath }).catch(() => {});
 
     try {
       // Register in recents
