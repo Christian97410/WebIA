@@ -7,7 +7,9 @@ import { resolve, relative } from 'path';
  */
 
 // WebIA's own source directory — never allow access
-const WIA_ROOT = resolve(import.meta.dirname, '../..');
+// In SEA/CJS bundles, import.meta.dirname is undefined — fall back to process.argv[0] location
+const _metaDir = typeof import.meta !== 'undefined' && import.meta.dirname;
+const WIA_ROOT = _metaDir ? resolve(_metaDir, '../..') : resolve(process.argv[0], '..', '..');
 
 /**
  * Validate that a file path is contained within the allowed project directory.
