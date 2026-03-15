@@ -772,6 +772,33 @@
   background: var(--bg-surface);
   border-radius: 8px;
   padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 150px;
+  overflow: hidden;
+  position: relative;
+}
+.chat-message-user.chat-msg-expanded {
+  max-height: none;
+}
+.chat-msg-expand {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  background: linear-gradient(transparent, var(--bg-surface) 60%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding-bottom: 4px;
+}
+.chat-msg-expand:hover {
+  color: var(--text-primary);
 }
 
 .chat-message-ai {
@@ -1087,6 +1114,35 @@
   font-family: var(--font-mono, 'SF Mono', monospace);
   font-size: inherit;
   color: var(--text-primary);
+}
+
+/* Horizontal rule */
+.chat-hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  margin: 12px 0;
+}
+
+/* Tables */
+.chat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.chat-table th,
+.chat-table td {
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 6px 10px;
+  text-align: left;
+}
+.chat-table th {
+  background: rgba(255,255,255,0.04);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.chat-table td {
+  color: var(--text-secondary);
 }
 
 /* Streaming cursor */
@@ -2922,6 +2978,19 @@
   opacity: 1;
 }
 
+.sb-token-fallback {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-align: center;
+  padding: 4px 0;
+}
+
+.sb-token-fallback:hover {
+  text-decoration: underline;
+  color: var(--text-secondary);
+}
+
 /* ── Vercel Panel ── */
 
 .vc-overlay {
@@ -3388,6 +3457,19 @@
 
 .topbar-btn--vercel:hover svg {
   opacity: 1;
+}
+
+.vc-token-fallback {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-align: center;
+  padding: 4px 0;
+}
+
+.vc-token-fallback:hover {
+  text-decoration: underline;
+  color: var(--text-secondary);
 }
 
 /* Code editor mode */

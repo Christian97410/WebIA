@@ -6,6 +6,10 @@ import { homedir } from 'os';
 const CONFIG_DIR = join(homedir(), '.wia');
 const VERCEL_TOKEN_FILE = join(CONFIG_DIR, 'vercel-token');
 const VERCEL_API = 'https://api.vercel.com';
+const VC_OAUTH_CLIENT_ID = process.env.VERCEL_OAUTH_CLIENT_ID || '';
+const VC_OAUTH_CLIENT_SECRET = process.env.VERCEL_OAUTH_CLIENT_SECRET || '';
+const VC_OAUTH_CALLBACK = '/api/vercel/oauth/callback';
+const pendingOAuthStates = new Set();
 
 // ── Token persistence ──
 
@@ -33,10 +37,17 @@ async function getAccessToken() {
 
 // Proxy helper for Vercel API
 async function vercelFetch(path, options = {}) {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Vercel');
+  const data = await loadToken();
+  if (!data?.access_token) throw new Error('Not authenticated with Vercel');
+  const token = data.access_token;
 
-  const resp = await fetch(`${VERCEL_API}${path}`, {
+  // Append teamId if stored (from OAuth flow)
+  let url = `${VERCEL_API}${path}`;
+  if (data.team_id) {
+    url += (url.includes('?') ? '&' : '?') + `teamId=${data.team_id}`;
+  }
+
+  const resp = await fetch(url, {
     ...options,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -101,6 +112,70 @@ export function createVercelRouter() {
   router.delete('/auth', async (_req, res) => {
     await deleteToken();
     res.json({ ok: true });
+  });
+
+  // ── OAuth flow ──
+
+  // Check if OAuth is configured
+  router.get('/oauth/config', (_req, res) => {
+    res.json({ configured: !!VC_OAUTH_CLIENT_ID });
+  });
+
+  // Start OAuth flow
+  router.get('/oauth/authorize', (req, res) => {
+    if (!VC_OAUTH_CLIENT_ID) return res.status(500).json({ error: 'Vercel OAuth not configured' });
+
+    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    pendingOAuthStates.add(state);
+    setTimeout(() => pendingOAuthStates.delete(state), 600000);
+
+    // Vercel OAuth uses their integrations URL
+    const params = new URLSearchParams({
+      client_id: VC_OAUTH_CLIENT_ID,
+      redirect_uri: `${req.protocol}://${req.get('host')}${VC_OAUTH_CALLBACK}`,
+      state,
+    });
+
+    // NOTE: Vercel's OAuth authorize URL might be at vercel.com/integrations/...
+    // but the standard flow uses:
+    res.json({ url: `https://vercel.com/integrations/${VC_OAUTH_CLIENT_ID}/new?${params}` });
+  });
+
+  // Handle OAuth callback
+  router.get('/oauth/callback', async (req, res) => {
+    const { code, state } = req.query;
+
+    if (!code) return res.status(400).send('Missing authorization code');
+    if (!state || !pendingOAuthStates.has(state)) return res.status(400).send('Invalid state');
+    pendingOAuthStates.delete(state);
+
+    try {
+      const tokenResp = await fetch('https://api.vercel.com/v2/oauth/access_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: VC_OAUTH_CLIENT_ID,
+          client_secret: VC_OAUTH_CLIENT_SECRET,
+          code,
+          redirect_uri: `${req.protocol}://${req.get('host')}${VC_OAUTH_CALLBACK}`,
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        const err = await tokenResp.text();
+        return res.status(400).send('OAuth failed: ' + err);
+      }
+
+      const data = await tokenResp.json();
+      await saveToken({
+        access_token: data.access_token,
+        team_id: data.team_id || null,
+      });
+
+      res.send(`<html><body><script>window.opener?.postMessage({type:'vercel-oauth-success'},'*');window.close();</script><p>Connected! You can close this tab.</p></body></html>`);
+    } catch (err) {
+      res.status(500).send('OAuth error: ' + err.message);
+    }
   });
 
   // ── Projects ──

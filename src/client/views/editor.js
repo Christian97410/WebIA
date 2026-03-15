@@ -961,6 +961,16 @@ export class EditorView {
         if (msg.role === 'user') {
           const el = h('div', { className: 'chat-message chat-message-user' }, msg.content);
           this.chatMessages.appendChild(el);
+          if (el.scrollHeight > 150) {
+            const btn = document.createElement('button');
+            btn.className = 'chat-msg-expand';
+            btn.textContent = 'Show more';
+            btn.addEventListener('click', () => {
+              el.classList.toggle('chat-msg-expanded');
+              btn.textContent = el.classList.contains('chat-msg-expanded') ? 'Show less' : 'Show more';
+            });
+            el.appendChild(btn);
+          }
         } else if (msg.role === 'assistant') {
           const el = h('div', { className: 'chat-message chat-message-ai' });
           const textDiv = document.createElement('div');
@@ -2826,64 +2836,136 @@ export class EditorView {
     this._chatContextLabel.querySelector('span').textContent = display;
   }
 
-  // Simple markdown renderer — no external deps
+  // Markdown renderer — no external deps, line-by-line processing
   _renderMarkdown(text) {
     if (!text) return '';
     const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const copyBtnSvg = '<button class="chat-copy-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button>';
 
-    // Extract code blocks first to protect them
-    const codeBlocks = [];
-    let safe = text.replace(/```(\w*)\s*\n([\s\S]*?)```/g, (_m, _lang, code) => {
-      const idx = codeBlocks.length;
-      codeBlocks.push(`<pre class="chat-code-block"><button class="chat-copy-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg></button><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
-      return `\n%%CODEBLOCK_${idx}%%\n`;
-    });
-
-    // Split into blocks by double newlines
-    const blocks = safe.split(/\n{2,}/);
+    const lines = text.split('\n');
     const out = [];
+    let i = 0;
 
-    for (const block of blocks) {
-      const trimmed = block.trim();
-      if (!trimmed) continue;
+    const flushParagraph = (buf) => {
+      if (buf.length) {
+        out.push(`<p>${this._inlineMarkdown(esc(buf.join('\n')).replace(/\n/g, '<br>'))}</p>`);
+      }
+    };
 
-      // Code block placeholder
-      const cbMatch = trimmed.match(/^%%CODEBLOCK_(\d+)%%$/);
-      if (cbMatch) {
-        out.push(codeBlocks[parseInt(cbMatch[1])]);
+    let paraBuf = [];
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Fenced code block
+      const codeMatch = line.match(/^```(\w*)\s*$/);
+      if (codeMatch) {
+        flushParagraph(paraBuf); paraBuf = [];
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !lines[i].match(/^```\s*$/)) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        i++; // skip closing ```
+        out.push(`<pre class="chat-code-block">${copyBtnSvg}<code>${esc(codeLines.join('\n'))}</code></pre>`);
         continue;
       }
 
-      // Headings
-      const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
-      if (headingMatch) {
-        const level = headingMatch[1].length;
-        out.push(`<h${level} class="chat-heading chat-h${level}">${this._inlineMarkdown(esc(headingMatch[2]))}</h${level}>`);
+      // Horizontal rule
+      if (line.match(/^\s*[-*_]{3,}\s*$/)) {
+        flushParagraph(paraBuf); paraBuf = [];
+        out.push('<hr class="chat-hr">');
+        i++;
         continue;
       }
 
-      // List block (- or 1.)
-      const lines = trimmed.split('\n');
-      if (lines[0].match(/^\s*[-*]\s/) || lines[0].match(/^\s*\d+\.\s/)) {
-        const isOrdered = !!lines[0].match(/^\s*\d+\.\s/);
-        const tag = isOrdered ? 'ol' : 'ul';
-        const items = lines
-          .filter(l => l.trim())
-          .map(l => {
-            const content = l.replace(/^\s*[-*]\s+/, '').replace(/^\s*\d+\.\s+/, '');
-            return `<li>${this._inlineMarkdown(esc(content))}</li>`;
-          })
-          .join('');
-        out.push(`<${tag} class="chat-list">${items}</${tag}>`);
+      // Heading
+      const headMatch = line.match(/^(#{1,4})\s+(.+)$/);
+      if (headMatch) {
+        flushParagraph(paraBuf); paraBuf = [];
+        const lvl = headMatch[1].length;
+        out.push(`<h${lvl} class="chat-heading chat-h${lvl}">${this._inlineMarkdown(esc(headMatch[2]))}</h${lvl}>`);
+        i++;
         continue;
       }
 
-      // Regular paragraph
-      const escaped = esc(trimmed);
-      const withBr = escaped.replace(/\n/g, '<br>');
-      out.push(`<p>${this._inlineMarkdown(withBr)}</p>`);
+      // Table (line starts with |)
+      if (line.match(/^\|.+\|/)) {
+        flushParagraph(paraBuf); paraBuf = [];
+        const tableLines = [];
+        while (i < lines.length && lines[i].match(/^\|/)) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        // Parse table: first row = header, second = separator (skip), rest = body
+        const parseRow = (r) => r.split('|').slice(1, -1).map(c => c.trim());
+        if (tableLines.length >= 2) {
+          const headers = parseRow(tableLines[0]);
+          const bodyRows = tableLines.slice(2); // skip separator row
+          let html = '<table class="chat-table"><thead><tr>';
+          for (const h of headers) html += `<th>${this._inlineMarkdown(esc(h))}</th>`;
+          html += '</tr></thead><tbody>';
+          for (const row of bodyRows) {
+            html += '<tr>';
+            const cells = parseRow(row);
+            for (let c = 0; c < headers.length; c++) {
+              html += `<td>${this._inlineMarkdown(esc(cells[c] || ''))}</td>`;
+            }
+            html += '</tr>';
+          }
+          html += '</tbody></table>';
+          out.push(html);
+        }
+        continue;
+      }
+
+      // Ordered list (1. 2. etc.)
+      if (line.match(/^\s*\d+\.\s/)) {
+        flushParagraph(paraBuf); paraBuf = [];
+        const items = [];
+        while (i < lines.length && (lines[i].match(/^\s*\d+\.\s/) || (lines[i].match(/^\s{2,}/) && items.length))) {
+          if (lines[i].match(/^\s*\d+\.\s/)) {
+            items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+          } else {
+            // Continuation line (indented)
+            if (items.length) items[items.length - 1] += '\n' + lines[i].trim();
+          }
+          i++;
+        }
+        out.push('<ol class="chat-list">' + items.map(t => `<li>${this._inlineMarkdown(esc(t).replace(/\n/g, '<br>'))}</li>`).join('') + '</ol>');
+        continue;
+      }
+
+      // Unordered list (- or *)
+      if (line.match(/^\s*[-*]\s/)) {
+        flushParagraph(paraBuf); paraBuf = [];
+        const items = [];
+        while (i < lines.length && (lines[i].match(/^\s*[-*]\s/) || (lines[i].match(/^\s{2,}/) && items.length))) {
+          if (lines[i].match(/^\s*[-*]\s/)) {
+            items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+          } else {
+            if (items.length) items[items.length - 1] += '\n' + lines[i].trim();
+          }
+          i++;
+        }
+        out.push('<ul class="chat-list">' + items.map(t => `<li>${this._inlineMarkdown(esc(t).replace(/\n/g, '<br>'))}</li>`).join('') + '</ul>');
+        continue;
+      }
+
+      // Empty line — flush paragraph
+      if (!line.trim()) {
+        flushParagraph(paraBuf); paraBuf = [];
+        i++;
+        continue;
+      }
+
+      // Regular text — accumulate into paragraph
+      paraBuf.push(line);
+      i++;
     }
 
+    flushParagraph(paraBuf);
     return out.join('');
   }
 
@@ -2918,6 +3000,19 @@ export class EditorView {
     // Add user message
     const userMsg = h('div', { className: 'chat-message chat-message-user' }, text);
     this.chatMessages.appendChild(userMsg);
+    // Add expand button if message overflows
+    requestAnimationFrame(() => {
+      if (userMsg.scrollHeight > 150) {
+        const btn = document.createElement('button');
+        btn.className = 'chat-msg-expand';
+        btn.textContent = 'Show more';
+        btn.addEventListener('click', () => {
+          userMsg.classList.toggle('chat-msg-expanded');
+          btn.textContent = userMsg.classList.contains('chat-msg-expanded') ? 'Show less' : 'Show more';
+        });
+        userMsg.appendChild(btn);
+      }
+    });
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
 
     // Build context
@@ -3134,7 +3229,10 @@ export class EditorView {
           // If there's a tool group before, attach text as last timeline item with a dot
           const lastGroup = aiMsg.querySelector('.chat-tool-group:last-of-type');
           const lastChild = aiMsg.lastElementChild;
-          if (lastGroup && (lastChild === lastGroup || lastChild?.classList.contains('chat-thinking-loader'))) {
+          const isTimelineEnd = lastChild === lastGroup
+            || lastChild?.classList.contains('chat-thinking-loader')
+            || lastChild?.classList.contains('chat-thinking');
+          if (lastGroup && isTimelineEnd) {
             const textRow = document.createElement('div');
             textRow.className = 'chat-tool-use chat-tool-use--response';
             textRow.innerHTML = '<span class="chat-tool-dot chat-tool-dot--response"></span>';
@@ -5399,7 +5497,7 @@ export class EditorView {
     loadingEl.remove();
 
     if (!authInfo.authenticated) {
-      this._renderSbAuth(panel, overlay);
+      await this._renderSbAuth(panel, overlay);
       return;
     }
 
@@ -5412,20 +5510,27 @@ export class EditorView {
     await this._renderSbLinked(panel, overlay, dir, linkInfo);
   }
 
-  _renderSbAuth(panel, overlay) {
+  async _renderSbAuth(panel, overlay) {
     const section = h('div', { className: 'sb-auth-section' });
     section.appendChild(h('div', { className: 'sb-section-title' }, 'Connect to Supabase'));
-    section.appendChild(h('div', { className: 'sb-hint' }, 'Enter your Personal Access Token from Supabase Dashboard > Account > Access Tokens.'));
 
+    // Check if OAuth is configured
+    let oauthConfig = { configured: false };
+    try {
+      oauthConfig = await api.get('/api/supabase/oauth/config');
+    } catch (_) {}
+
+    // Token input flow (used as fallback or primary if no OAuth)
+    const tokenSection = h('div', { className: 'sb-token-section' });
+    tokenSection.appendChild(h('div', { className: 'sb-hint' }, 'Enter your Personal Access Token from Supabase Dashboard > Account > Access Tokens.'));
     const tokenInput = h('input', {
       className: 'sb-input',
       type: 'password',
       placeholder: 'sbp_...',
     });
     const statusMsg = h('div', { className: 'sb-status-msg' });
-
-    section.appendChild(tokenInput);
-    section.appendChild(h('div', { className: 'sb-actions' },
+    tokenSection.appendChild(tokenInput);
+    tokenSection.appendChild(h('div', { className: 'sb-actions' },
       statusMsg,
       h('button', {
         className: 'sb-btn sb-btn-primary',
@@ -5446,6 +5551,54 @@ export class EditorView {
         },
       }, 'Connect'),
     ));
+
+    if (oauthConfig.configured) {
+      // OAuth primary flow
+      const oauthSection = h('div', { className: 'sb-oauth-section' });
+      oauthSection.appendChild(h('div', { className: 'sb-hint' }, 'Sign in with your Supabase account.'));
+      oauthSection.appendChild(h('button', {
+        className: 'sb-btn sb-btn-primary',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Opening...';
+          try {
+            const data = await api.get('/api/supabase/oauth/authorize');
+            window.open(data.url, 'supabase-oauth', 'width=600,height=700');
+            const handler = (ev) => {
+              if (ev.data?.type === 'supabase-oauth-success') {
+                window.removeEventListener('message', handler);
+                overlay.remove();
+                this.showSupabasePanel();
+              }
+            };
+            window.addEventListener('message', handler);
+            e.target.disabled = false;
+            e.target.textContent = 'Connect with Supabase';
+          } catch (err) {
+            e.target.disabled = false;
+            e.target.textContent = 'Connect with Supabase';
+          }
+        },
+      }, 'Connect with Supabase'));
+
+      // Fallback link to token input
+      tokenSection.style.display = 'none';
+      const fallbackLink = h('span', {
+        className: 'sb-token-fallback',
+        onClick: () => {
+          oauthSection.style.display = 'none';
+          fallbackLink.style.display = 'none';
+          tokenSection.style.display = '';
+        },
+      }, 'Use access token instead');
+
+      section.appendChild(oauthSection);
+      section.appendChild(fallbackLink);
+      section.appendChild(tokenSection);
+    } else {
+      // No OAuth — show token flow directly
+      section.appendChild(tokenSection);
+    }
 
     panel.appendChild(section);
   }
@@ -5784,7 +5937,7 @@ export class EditorView {
     loadingEl.remove();
 
     if (!authInfo.authenticated) {
-      this._renderVcAuth(panel, overlay);
+      await this._renderVcAuth(panel, overlay);
       return;
     }
 
@@ -5797,20 +5950,27 @@ export class EditorView {
     await this._renderVcLinked(panel, overlay, dir, linkInfo);
   }
 
-  _renderVcAuth(panel, overlay) {
+  async _renderVcAuth(panel, overlay) {
     const section = h('div', { className: 'vc-auth-section' });
     section.appendChild(h('div', { className: 'vc-section-title' }, 'Connect to Vercel'));
-    section.appendChild(h('div', { className: 'vc-hint' }, 'Enter your Vercel Personal Access Token from Settings > Tokens.'));
 
+    // Check if OAuth is configured
+    let oauthConfig = { configured: false };
+    try {
+      oauthConfig = await api.get('/api/vercel/oauth/config');
+    } catch (_) {}
+
+    // Token input flow (used as fallback or primary if no OAuth)
+    const tokenSection = h('div', { className: 'vc-token-section' });
+    tokenSection.appendChild(h('div', { className: 'vc-hint' }, 'Enter your Vercel Personal Access Token from Settings > Tokens.'));
     const tokenInput = h('input', {
       className: 'vc-input',
       type: 'password',
       placeholder: '...',
     });
     const statusMsg = h('div', { className: 'vc-status-msg' });
-
-    section.appendChild(tokenInput);
-    section.appendChild(h('div', { className: 'vc-actions' },
+    tokenSection.appendChild(tokenInput);
+    tokenSection.appendChild(h('div', { className: 'vc-actions' },
       statusMsg,
       h('button', {
         className: 'vc-btn vc-btn-primary',
@@ -5831,6 +5991,54 @@ export class EditorView {
         },
       }, 'Connect'),
     ));
+
+    if (oauthConfig.configured) {
+      // OAuth primary flow
+      const oauthSection = h('div', { className: 'vc-oauth-section' });
+      oauthSection.appendChild(h('div', { className: 'vc-hint' }, 'Sign in with your Vercel account.'));
+      oauthSection.appendChild(h('button', {
+        className: 'vc-btn vc-btn-primary',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Opening...';
+          try {
+            const data = await api.get('/api/vercel/oauth/authorize');
+            window.open(data.url, 'vercel-oauth', 'width=600,height=700');
+            const handler = (ev) => {
+              if (ev.data?.type === 'vercel-oauth-success') {
+                window.removeEventListener('message', handler);
+                overlay.remove();
+                this.showVercelPanel();
+              }
+            };
+            window.addEventListener('message', handler);
+            e.target.disabled = false;
+            e.target.textContent = 'Connect with Vercel';
+          } catch (err) {
+            e.target.disabled = false;
+            e.target.textContent = 'Connect with Vercel';
+          }
+        },
+      }, 'Connect with Vercel'));
+
+      // Fallback link to token input
+      tokenSection.style.display = 'none';
+      const fallbackLink = h('span', {
+        className: 'vc-token-fallback',
+        onClick: () => {
+          oauthSection.style.display = 'none';
+          fallbackLink.style.display = 'none';
+          tokenSection.style.display = '';
+        },
+      }, 'Use access token instead');
+
+      section.appendChild(oauthSection);
+      section.appendChild(fallbackLink);
+      section.appendChild(tokenSection);
+    } else {
+      // No OAuth — show token flow directly
+      section.appendChild(tokenSection);
+    }
 
     panel.appendChild(section);
   }

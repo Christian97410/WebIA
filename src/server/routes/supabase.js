@@ -8,6 +8,12 @@ const SB_TOKEN_FILE = join(CONFIG_DIR, 'supabase-token');
 
 const SB_API = 'https://api.supabase.com';
 
+const SB_OAUTH_CLIENT_ID = process.env.SUPABASE_OAUTH_CLIENT_ID || '';
+const SB_OAUTH_CLIENT_SECRET = process.env.SUPABASE_OAUTH_CLIENT_SECRET || '';
+const SB_OAUTH_CALLBACK = '/api/supabase/oauth/callback';
+
+const pendingOAuthStates = new Set();
+
 // ── Token persistence ──
 
 async function loadToken() {
@@ -131,6 +137,74 @@ export function createSupabaseRouter() {
   router.delete('/auth', async (_req, res) => {
     await deleteToken();
     res.json({ ok: true });
+  });
+
+  // ── OAuth flow ──
+
+  // Check if OAuth is configured
+  router.get('/oauth/config', (_req, res) => {
+    res.json({ configured: !!SB_OAUTH_CLIENT_ID });
+  });
+
+  // Start OAuth flow
+  router.get('/oauth/authorize', (req, res) => {
+    if (!SB_OAUTH_CLIENT_ID) return res.status(500).json({ error: 'Supabase OAuth not configured' });
+
+    // Generate state for CSRF protection
+    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    // Store state temporarily (in-memory, cleared on callback)
+    pendingOAuthStates.add(state);
+    setTimeout(() => pendingOAuthStates.delete(state), 600000); // 10 min expiry
+
+    const params = new URLSearchParams({
+      client_id: SB_OAUTH_CLIENT_ID,
+      redirect_uri: `${req.protocol}://${req.get('host')}${SB_OAUTH_CALLBACK}`,
+      response_type: 'code',
+      state,
+    });
+
+    res.json({ url: `https://api.supabase.com/v1/oauth/authorize?${params}` });
+  });
+
+  // Handle OAuth callback, exchange code for token
+  router.get('/oauth/callback', async (req, res) => {
+    const { code, state } = req.query;
+
+    if (!code) return res.status(400).send('Missing authorization code');
+    if (!state || !pendingOAuthStates.has(state)) return res.status(400).send('Invalid state');
+    pendingOAuthStates.delete(state);
+
+    try {
+      const tokenResp = await fetch('https://api.supabase.com/v1/oauth/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: 'Basic ' + Buffer.from(`${SB_OAUTH_CLIENT_ID}:${SB_OAUTH_CLIENT_SECRET}`).toString('base64'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: `${req.protocol}://${req.get('host')}${SB_OAUTH_CALLBACK}`,
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        const err = await tokenResp.text();
+        return res.status(400).send('OAuth failed: ' + err);
+      }
+
+      const tokens = await tokenResp.json();
+      await saveToken({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
+      });
+
+      // Redirect back to the app (close the OAuth popup/tab)
+      res.send(`<html><body><script>window.opener?.postMessage({type:'supabase-oauth-success'},'*');window.close();</script><p>Connected! You can close this tab.</p></body></html>`);
+    } catch (err) {
+      res.status(500).send('OAuth error: ' + err.message);
+    }
   });
 
   // ── Projects ──
