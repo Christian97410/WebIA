@@ -156,7 +156,7 @@ export class EditorView {
             onClick: () => this.showSupabasePanel(),
             title: 'Supabase',
           });
-          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 109 113" fill="none"><path d="M63.7 110.3c-2.6 3.3-8.1.7-7.8-3.6l3.3-44.4H104c4.8 0 7.4 5.6 4.3 9.2L63.7 110.3Z" fill="currentColor" opacity="0.7"/><path d="M45.3 2.7c2.6-3.3 8.1-.7 7.8 3.6l-1.7 44.4H5c-4.8 0-7.4-5.6-4.3-9.2L45.3 2.7Z" fill="currentColor"/></svg>';
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 109 113" fill="none"><path d="M63.7 110.3c-2.6 3.3-8.1.7-7.8-3.6l3.3-44.4H104c4.8 0 7.4 5.6 4.3 9.2L63.7 110.3Z" fill="currentColor" opacity="0.7"/><path d="M45.3 2.7c2.6-3.3 8.1-.7 7.8 3.6l-1.7 44.4H5c-4.8 0-7.4-5.6-4.3-9.2L45.3 2.7Z" fill="currentColor"/></svg><span>Supabase</span>';
           return btn;
         })(),
         (() => {
@@ -165,7 +165,7 @@ export class EditorView {
             onClick: () => this.showVercelPanel(),
             title: 'Vercel',
           });
-          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 76 65" fill="none"><path d="M37.5274 0L75.0548 65H0L37.5274 0Z" fill="currentColor"/></svg>';
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 76 65" fill="none"><path d="M37.5274 0L75.0548 65H0L37.5274 0Z" fill="currentColor"/></svg><span>Vercel</span>';
           return btn;
         })(),
         (() => {
@@ -364,7 +364,15 @@ export class EditorView {
       });
       redirectBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 2l12 12M8 1a7 7 0 100 14A7 7 0 008 1z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
 
-      urlBar.append(this._routeSelect, this._urlInput, redirectBtn, urlRefresh);
+      // Rebuild button
+      this._rebuildBtn = h('button', {
+        className: 'canvas-urlbar__btn canvas-urlbar__rebuild',
+        title: 'Rebuild (restart dev server)',
+        onClick: () => this._restartDevServer(),
+      });
+      this._rebuildBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M1 8a7 7 0 0112.9-3.7M15 8a7 7 0 01-12.9 3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M14 1v3.5h-3.5M2 15v-3.5h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+      urlBar.append(this._routeSelect, this._urlInput, redirectBtn, urlRefresh, this._rebuildBtn);
       this.canvasWrapper.appendChild(urlBar);
 
       // Fetch routes in background
@@ -698,11 +706,21 @@ export class EditorView {
     // Terminal toolbar: dropdown + new + kill
     this._termToolbar = h('div', { className: 'term-toolbar' });
 
-    this._termSelect = h('select', {
-      className: 'term-select',
-      onChange: () => this._switchTerminalInstance(this._termSelect.value),
+    // Custom dropdown (no native <select>)
+    this._termDropdown = h('div', { className: 'term-dropdown' });
+    this._termDropdownBtn = h('button', { className: 'term-dropdown-btn', onClick: () => this._toggleTermDropdown() });
+    this._termDropdownBtn.innerHTML = '<span class="term-dropdown-label">zsh 1</span><svg width="10" height="10" viewBox="0 0 10 10"><path d="M2.5 4L5 6.5L7.5 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+    this._termDropdownMenu = h('div', { className: 'term-dropdown-menu' });
+    this._termDropdown.appendChild(this._termDropdownBtn);
+    this._termDropdown.appendChild(this._termDropdownMenu);
+    this._termToolbar.appendChild(this._termDropdown);
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      if (!this._termDropdown.contains(e.target)) {
+        this._termDropdownMenu.classList.remove('open');
+      }
     });
-    this._termToolbar.appendChild(this._termSelect);
 
     const addBtn = h('button', {
       className: 'term-toolbar-btn',
@@ -814,8 +832,7 @@ export class EditorView {
     this._termInstances.set(id, { xterm, fitAddon, container, resizeObs, started: false, name });
 
     // Update dropdown
-    const opt = h('option', { value: id }, name);
-    this._termSelect.appendChild(opt);
+    this._updateTermDropdown();
 
     // Switch to this new instance
     this._switchTerminalInstance(id);
@@ -833,7 +850,7 @@ export class EditorView {
     }
 
     this._activeTermId = id;
-    this._termSelect.value = id;
+    this._updateTermDropdown();
 
     // Start if not started yet
     if (!inst.started) {
@@ -876,9 +893,8 @@ export class EditorView {
     inst.container.remove();
     this._termInstances.delete(id);
 
-    // Remove from dropdown
-    const opt = this._termSelect.querySelector(`option[value="${id}"]`);
-    if (opt) opt.remove();
+    // Update dropdown
+    this._updateTermDropdown();
 
     // Switch to another terminal or create one if none left
     if (this._termInstances.size > 0) {
@@ -886,6 +902,30 @@ export class EditorView {
       this._switchTerminalInstance(nextId);
     } else {
       this._activeTermId = null;
+    }
+  }
+
+  _toggleTermDropdown() {
+    this._termDropdownMenu.classList.toggle('open');
+  }
+
+  _updateTermDropdown() {
+    // Update button label
+    const active = this._activeTermId && this._termInstances.get(this._activeTermId);
+    const label = this._termDropdownBtn.querySelector('.term-dropdown-label');
+    if (label) label.textContent = active ? active.name : '';
+
+    // Rebuild menu
+    this._termDropdownMenu.innerHTML = '';
+    for (const [tid, t] of this._termInstances) {
+      const item = h('button', {
+        className: 'term-dropdown-item' + (tid === this._activeTermId ? ' active' : ''),
+        onClick: () => {
+          this._switchTerminalInstance(tid);
+          this._termDropdownMenu.classList.remove('open');
+        },
+      }, t.name);
+      this._termDropdownMenu.appendChild(item);
     }
   }
 
@@ -2352,6 +2392,100 @@ export class EditorView {
     } else {
       setAndLoad();
     }
+  }
+
+  // Restart the dev server (rebuild)
+  async _restartDevServer() {
+    if (!this.devServer || this._rebuilding) return;
+    this._rebuilding = true;
+    this._rebuildBtn.classList.add('active');
+    this._rebuildBtn.setAttribute('disabled', '');
+
+    try {
+      const data = await api.post('/api/devserver/restart', { dir: this.projectPath });
+      if (!data || data.error) {
+        this._showBuildError(data?.error || 'Failed to restart dev server');
+        return;
+      }
+
+      // Poll status until ready or crashed
+      const poll = () => {
+        setTimeout(async () => {
+          try {
+            const status = await api.get(`/api/devserver/status?dir=${encodeURIComponent(this.projectPath)}`);
+            if (status.status === 'ready') {
+              this.devServer.port = status.port;
+              this._devProxyReady = false;
+              this._navigateDevPreview(this._devPath || '/');
+              this._loadRoutes();
+            } else if (status.status === 'crashed') {
+              this._showBuildError(status.logs || status.error || 'Dev server crashed');
+            } else {
+              poll();
+              return;
+            }
+          } catch {
+            this._showBuildError('Lost connection while restarting');
+          }
+          this._rebuilding = false;
+          this._rebuildBtn.classList.remove('active');
+          this._rebuildBtn.removeAttribute('disabled');
+        }, 1000);
+      };
+      poll();
+    } catch (err) {
+      this._showBuildError(err.message);
+      this._rebuilding = false;
+      this._rebuildBtn.classList.remove('active');
+      this._rebuildBtn.removeAttribute('disabled');
+    }
+  }
+
+  // Show build error overlay with Fix with AI / Copy
+  _showBuildError(errorText) {
+    // Remove any existing overlay
+    this.canvasWrapper.querySelector('.build-error-overlay')?.remove();
+
+    const overlay = h('div', { className: 'build-error-overlay' });
+
+    const header = h('div', { className: 'build-error-header' },
+      h('span', {}, 'Build Error'),
+      h('button', {
+        className: 'build-error-close',
+        onClick: () => overlay.remove(),
+      }, '\u00D7'),
+    );
+
+    const logBlock = h('pre', { className: 'build-error-log' });
+    logBlock.textContent = errorText;
+
+    const actions = h('div', { className: 'build-error-actions' },
+      h('button', {
+        className: 'build-error-btn build-error-btn--primary',
+        onClick: () => {
+          const chatInput = document.querySelector('.chat-input');
+          if (chatInput) {
+            chatInput.value = `Fix this build error:\n\n${errorText}`;
+            chatInput.focus();
+            chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+            chatInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            overlay.remove();
+          }
+        },
+      }, 'Fix with AI'),
+      h('button', {
+        className: 'build-error-btn build-error-btn--secondary',
+        onClick: (e) => {
+          navigator.clipboard.writeText(errorText).then(() => {
+            e.target.textContent = 'Copied!';
+            setTimeout(() => { e.target.textContent = 'Copy errors'; }, 1500);
+          });
+        },
+      }, 'Copy errors'),
+    );
+
+    overlay.append(header, logBlock, actions);
+    this.canvasWrapper.appendChild(overlay);
   }
 
   // Canvas & iframe
@@ -5730,6 +5864,193 @@ export class EditorView {
     }
   }
 
+  // ── MCP Panel ──
+
+  async showMcpPanel() {
+    const dir = this.projectPath;
+
+    // Overlay
+    const overlay = h('div', { className: 'mcp-overlay' });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+    document.addEventListener('keydown', onKey);
+
+    const panel = h('div', { className: 'mcp-panel' });
+
+    // Header
+    panel.appendChild(h('div', { className: 'mcp-header' },
+      h('div', { className: 'mcp-header-left' },
+        h('span', { className: 'mcp-header-title' }, 'MCP Servers'),
+      ),
+      h('button', { className: 'mcp-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    const content = h('div', { className: 'mcp-content' });
+    panel.appendChild(content);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    // Load current config + presets
+    let servers, presets;
+    try {
+      [{ servers }, presets] = await Promise.all([
+        api.get(`/api/mcp/config?dir=${encodeURIComponent(dir)}`),
+        api.get('/api/mcp/presets'),
+      ]);
+    } catch (err) {
+      content.appendChild(h('div', { className: 'mcp-empty' }, 'Failed to load MCP config'));
+      return;
+    }
+
+    // Current servers
+    const serverList = h('div', { className: 'mcp-server-list' });
+
+    const renderServers = async () => {
+      serverList.innerHTML = '';
+
+      try {
+        const data = await api.get(`/api/mcp/config?dir=${encodeURIComponent(dir)}`);
+        servers = data.servers;
+      } catch {}
+
+      if (servers.length === 0) {
+        serverList.appendChild(h('div', { className: 'mcp-empty' }, 'No MCP servers configured. Add one from the presets below.'));
+      } else {
+        for (const s of servers) {
+          const isHttp = s.type === 'http';
+          const detail = isHttp ? s.url : (s.command + ' ' + (s.args || []).join(' '));
+
+          serverList.appendChild(h('div', { className: 'mcp-server-item' },
+            h('div', { className: 'mcp-server-info' },
+              h('div', { className: 'mcp-server-name' }, s.name),
+              h('div', { className: 'mcp-server-detail' }, detail),
+            ),
+            h('button', {
+              className: 'mcp-btn mcp-btn-secondary',
+              onClick: async () => {
+                await api.del('/api/mcp/servers', { dir, name: s.name });
+                renderServers();
+              },
+            }, 'Remove'),
+          ));
+        }
+      }
+    };
+
+    content.appendChild(h('div', { className: 'mcp-section-title' }, 'Active servers'));
+    content.appendChild(serverList);
+    renderServers();
+
+    // Presets
+    content.appendChild(h('div', { className: 'mcp-section-title' }, 'Add from presets'));
+
+    const presetList = h('div', { className: 'mcp-preset-list' });
+    for (const p of presets) {
+      // Check if already added
+      const alreadyAdded = servers.some(s => s.name === p.id);
+
+      const addBtn = h('button', {
+        className: `mcp-btn ${alreadyAdded ? 'mcp-btn-secondary' : 'mcp-btn-primary'}`,
+        disabled: alreadyAdded,
+        onClick: async (e) => {
+          // If preset needs env var, show an inline input first
+          if (p.envHint) {
+            const existing = e.target.parentElement.querySelector('.mcp-env-form');
+            if (existing) return; // already showing
+
+            const envInput = h('input', {
+              className: 'mcp-input',
+              type: 'text',
+              placeholder: `${p.envHint}=...`,
+            });
+            const envForm = h('div', { className: 'mcp-env-form' },
+              envInput,
+              h('button', {
+                className: 'mcp-btn mcp-btn-primary',
+                onClick: async () => {
+                  const val = envInput.value.trim();
+                  if (!val) return;
+                  const env = {};
+                  env[p.envHint] = val;
+                  await api.post('/api/mcp/servers', { dir, preset: p.id, env });
+                  renderServers();
+                  envForm.remove();
+                  addBtn.disabled = true;
+                  addBtn.textContent = 'Added';
+                },
+              }, 'Add'),
+            );
+            e.target.parentElement.appendChild(envForm);
+            envInput.focus();
+            return;
+          }
+
+          await api.post('/api/mcp/servers', { dir, preset: p.id });
+          renderServers();
+          e.target.disabled = true;
+          e.target.textContent = 'Added';
+        },
+      }, alreadyAdded ? 'Added' : 'Add');
+
+      presetList.appendChild(h('div', { className: 'mcp-preset-item' },
+        h('div', { className: 'mcp-preset-info' },
+          h('div', { className: 'mcp-preset-name' }, p.name),
+          h('div', { className: 'mcp-preset-desc' }, p.description),
+        ),
+        addBtn,
+      ));
+    }
+    content.appendChild(presetList);
+
+    // Custom server section
+    content.appendChild(h('div', { className: 'mcp-section-title' }, 'Add custom'));
+
+    const customName = h('input', { className: 'mcp-input', placeholder: 'Server name' });
+    const customUrl = h('input', { className: 'mcp-input', placeholder: 'URL (for HTTP) or command (for stdio)' });
+    const customStatus = h('div', { className: 'mcp-status-msg' });
+
+    content.appendChild(h('div', { className: 'mcp-custom-form' },
+      customName,
+      customUrl,
+      h('div', { className: 'mcp-actions' },
+        customStatus,
+        h('button', {
+          className: 'mcp-btn mcp-btn-primary',
+          onClick: async () => {
+            const name = customName.value.trim();
+            const urlOrCmd = customUrl.value.trim();
+            if (!name || !urlOrCmd) {
+              customStatus.textContent = 'Name and URL/command required';
+              return;
+            }
+
+            let config;
+            if (urlOrCmd.startsWith('http://') || urlOrCmd.startsWith('https://')) {
+              config = { type: 'http', url: urlOrCmd };
+            } else {
+              const parts = urlOrCmd.split(/\s+/);
+              config = { command: parts[0], args: parts.slice(1) };
+            }
+
+            try {
+              await api.post('/api/mcp/servers', { dir, name, config });
+              renderServers();
+              customName.value = '';
+              customUrl.value = '';
+              customStatus.textContent = 'Added!';
+              setTimeout(() => { customStatus.textContent = ''; }, 2000);
+            } catch (err) {
+              customStatus.textContent = err.message;
+            }
+          },
+        }, 'Add server'),
+      ),
+    ));
+
+    // Info hint at bottom
+    content.appendChild(h('div', { className: 'mcp-hint' }, 'MCP servers give the AI direct access to external services. Configuration is saved in .mcp.json at the project root.'));
+  }
+
   // ── Supabase Panel ──
 
   async showSupabasePanel() {
@@ -6815,6 +7136,7 @@ export class EditorView {
       { id: 'toggle-right', label: 'Toggle right panel', section: 'View', action: () => this._togglePanel('right') },
       { id: 'terminal', label: 'Open terminal', section: 'View', action: () => this._switchBottomTab('terminal') },
       { id: 'git', label: 'Open Git panel', section: 'Git', action: () => this.showGitPanel() },
+      { id: 'mcp', label: 'Configure MCP servers', section: 'Settings', action: () => this.showMcpPanel() },
       { id: 'chat', label: 'Focus AI chat', shortcut: 'cmd+i', section: 'AI', action: () => this.chatInput?.focus() },
     ];
 

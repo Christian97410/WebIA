@@ -495,6 +495,77 @@ export function createDevServerRouter() {
     }
   });
 
+  // Restart dev server (kill + re-launch)
+  router.post('/restart', async (req, res) => {
+    try {
+      const { dir } = req.body;
+      if (!dir) return res.status(400).json({ error: 'dir required' });
+
+      const existing = servers.get(dir);
+      if (existing && existing.process) {
+        existing.process.kill('SIGTERM');
+      }
+      servers.delete(dir);
+
+      const info = await detectFramework(dir);
+      if (!info) {
+        return res.status(400).json({ error: 'No framework detected.' });
+      }
+
+      const port = await findPort();
+      const entry = { process: null, port, framework: info.framework, projectDir: info.dir, status: 'starting', logs: '' };
+      servers.set(dir, entry);
+
+      res.json({ port, framework: info.framework, status: 'starting' });
+
+      // Background: start dev server
+      (async () => {
+        try {
+          if (needsInstall(info.dir)) {
+            await installDeps(info.dir, entry);
+          }
+
+          entry.status = 'starting';
+          const child = await startDevServer(info, port);
+          entry.process = child;
+
+          child.stdout.on('data', (d) => { entry.logs += d.toString(); });
+          child.stderr.on('data', (d) => { entry.logs += d.toString(); });
+
+          child.on('exit', (code) => {
+            console.log(`[devserver] ${info.framework} exited with code ${code}`);
+            if (entry.status === 'starting' || entry.status === 'installing') {
+              entry.status = 'crashed';
+              entry.error = `Process exited with code ${code}`;
+              setTimeout(() => servers.delete(dir), 15000);
+            } else {
+              servers.delete(dir);
+            }
+          });
+
+          waitForServer(port, child).then(() => {
+            entry.status = 'ready';
+            console.log(`[devserver] ${info.framework} restarted on port ${port}`);
+          }).catch((waitErr) => {
+            if (!child.killed && child.exitCode !== null) {
+              entry.status = 'crashed';
+              entry.error = waitErr.message;
+            } else {
+              entry.status = 'ready';
+            }
+          });
+        } catch (err) {
+          entry.status = 'crashed';
+          entry.error = err.message;
+          entry.logs += `[WebIA] Error: ${err.message}\n`;
+          setTimeout(() => servers.delete(dir), 15000);
+        }
+      })();
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Stop dev server
   router.post('/stop', async (req, res) => {
     try {

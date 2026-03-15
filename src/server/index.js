@@ -13,6 +13,7 @@ import { createDevServerRouter } from './routes/devserver.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSupabaseRouter } from './routes/supabase.js';
 import { createVercelRouter } from './routes/vercel.js';
+import { createMcpRouter } from './routes/mcp.js';
 import { setupWebSocket } from './ws.js';
 
 // In ESM: derive __filename/__dirname from import.meta.url
@@ -77,6 +78,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   app.use('/api/media', createMediaRouter());
   app.use('/api/supabase', createSupabaseRouter());
   app.use('/api/vercel', createVercelRouter());
+  app.use('/api/mcp', createMcpRouter());
 
   // Serve the target project's files (images, css, js, etc.)
   // Track the last project dir for static preview (CSS/JS loaded without ?project= param)
