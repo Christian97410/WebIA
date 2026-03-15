@@ -12,6 +12,7 @@ import { createAIRouter } from './routes/ai.js';
 import { createDevServerRouter } from './routes/devserver.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSupabaseRouter } from './routes/supabase.js';
+import { createVercelRouter } from './routes/vercel.js';
 import { setupWebSocket } from './ws.js';
 
 // In ESM: derive __filename/__dirname from import.meta.url
@@ -75,6 +76,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   app.use('/api/devserver', createDevServerRouter());
   app.use('/api/media', createMediaRouter());
   app.use('/api/supabase', createSupabaseRouter());
+  app.use('/api/vercel', createVercelRouter());
 
   // Serve the target project's files (images, css, js, etc.)
   // Track the last project dir for static preview (CSS/JS loaded without ?project= param)
@@ -192,7 +194,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   app.get('/api/update-check', async (req, res) => {
     if (!currentVersion) return res.json({ available: false, reason: 'dev-mode' });
-    if (cachedUpdate) return res.json(cachedUpdate);
+    if (cachedUpdate?.available) return res.json(cachedUpdate);
 
     try {
       const resp = await fetch(UPDATE_URL);
@@ -209,14 +211,23 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
 
   // Signal from frontend → Tauri Rust polls this to trigger download+install
   let installRequested = false;
+  let updateProgress = { stage: 'idle', percent: 0 }; // idle | downloading | installing | restarting
 
   app.post('/api/install-update', (req, res) => {
     installRequested = true;
+    updateProgress = { stage: 'downloading', percent: 0 };
     res.json({ ok: true });
   });
 
   app.get('/api/install-update/status', (req, res) => {
-    res.json({ requested: installRequested });
+    res.json({ requested: installRequested, progress: updateProgress });
+  });
+
+  // Tauri Rust posts progress updates here
+  app.post('/api/install-update/progress', (req, res) => {
+    const { stage, percent } = req.body;
+    if (stage) updateProgress = { stage, percent: percent || 0 };
+    res.json({ ok: true });
   });
 
   function compareVersions(a, b) {

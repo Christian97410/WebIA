@@ -10,10 +10,17 @@ export class ProjectsView {
   }
 
   async listenForUpdates() {
-    try {
-      const data = await api.get('/api/update-check');
-      if (data.available) this.showUpdateBanner(data.latestVersion);
-    } catch {}
+    const check = async () => {
+      try {
+        const data = await api.get('/api/update-check');
+        if (data.available) { this.showUpdateBanner(data.latestVersion); return true; }
+      } catch {}
+      return false;
+    };
+    if (await check()) return;
+    this._updateInterval = setInterval(async () => {
+      if (await check()) clearInterval(this._updateInterval);
+    }, 5 * 60 * 1000);
   }
 
   showUpdateBanner(version) {
@@ -22,11 +29,39 @@ export class ProjectsView {
     const btn = h('button', {
       className: 'update-toast__btn',
       onClick: async () => {
-        btn.textContent = 'Installing…';
-        btn.disabled = true;
-        try { await api.post('/api/install-update'); } catch {}
+        btn.style.display = 'none';
+        closeBtn.style.display = 'none';
+        progressWrap.style.display = '';
+        try {
+          await api.post('/api/install-update');
+          const poll = setInterval(async () => {
+            try {
+              const { progress } = await api.get('/api/install-update/status');
+              if (!progress) return;
+              const labels = { downloading: 'Downloading', installing: 'Installing', restarting: 'Restarting' };
+              progressLabel.textContent = `${labels[progress.stage] || progress.stage}...`;
+              progressBar.style.width = `${progress.percent || 0}%`;
+              if (progress.stage === 'installing') progressBar.style.width = '100%';
+              if (progress.stage === 'restarting') {
+                progressLabel.textContent = 'Restarting...';
+                progressBar.style.width = '100%';
+                clearInterval(poll);
+              }
+            } catch {}
+          }, 300);
+        } catch {}
       },
     }, 'Update');
+
+    const progressBar = h('div', { className: 'update-toast__progress-bar' });
+    const progressTrack = h('div', { className: 'update-toast__progress-track' }, progressBar);
+    const progressLabel = h('div', { className: 'update-toast__progress-label' }, 'Downloading...');
+    const progressWrap = h('div', { className: 'update-toast__progress', style: 'display:none' }, progressLabel, progressTrack);
+
+    const closeBtn = h('button', {
+      className: 'update-toast__close',
+      onClick: () => toast.remove(),
+    }, '\u2715');
 
     const toast = h('div', { className: 'update-toast' },
       h('div', { className: 'update-toast__text' },
@@ -34,10 +69,8 @@ export class ProjectsView {
         h('span', { className: 'update-toast__version' }, `v${version}`),
       ),
       btn,
-      h('button', {
-        className: 'update-toast__close',
-        onClick: () => toast.remove(),
-      }, '\u2715'),
+      progressWrap,
+      closeBtn,
     );
     document.body.appendChild(toast);
   }

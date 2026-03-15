@@ -161,6 +161,15 @@ export class EditorView {
         })(),
         (() => {
           const btn = h('button', {
+            className: 'topbar-btn topbar-btn--vercel',
+            onClick: () => this.showVercelPanel(),
+            title: 'Vercel',
+          });
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 76 65" fill="none"><path d="M37.5274 0L75.0548 65H0L37.5274 0Z" fill="currentColor"/></svg>';
+          return btn;
+        })(),
+        (() => {
+          const btn = h('button', {
             className: 'topbar-btn topbar-btn--git',
             onClick: () => this.showGitPanel(),
             title: 'Git',
@@ -5732,6 +5741,471 @@ export class EditorView {
     ));
   }
 
+  // ── Vercel Panel ──
+
+  async showVercelPanel() {
+    const dir = this.projectPath;
+    const q = (p) => `${p}${p.includes('?') ? '&' : '?'}dir=${encodeURIComponent(dir)}`;
+
+    // Overlay
+    const overlay = h('div', { className: 'vc-overlay' });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    const onKey = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); } };
+    document.addEventListener('keydown', onKey);
+
+    const panel = h('div', { className: 'vc-panel' });
+
+    // Header
+    panel.appendChild(h('div', { className: 'vc-header' },
+      h('div', { className: 'vc-header-left' },
+        h('svg', { innerHTML: '<path d="M37.5274 0L75.0548 65H0L37.5274 0Z" fill="currentColor"/>', width: '14', height: '14', viewBox: '0 0 76 65', fill: 'none', style: 'flex-shrink:0' }),
+        h('span', { className: 'vc-header-title' }, 'Vercel'),
+      ),
+      h('button', { className: 'vc-close', onClick: () => overlay.remove() }, '\u2715'),
+    ));
+
+    const loadingEl = h('div', { className: 'vc-loading' }, 'Loading...');
+    panel.appendChild(loadingEl);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    // Fetch auth + link status
+    let authInfo, linkInfo;
+    try {
+      [authInfo, linkInfo] = await Promise.all([
+        api.get('/api/vercel/auth'),
+        api.get(q('/api/vercel/link')),
+      ]);
+    } catch (err) {
+      loadingEl.textContent = 'Failed to connect';
+      return;
+    }
+
+    loadingEl.remove();
+
+    if (!authInfo.authenticated) {
+      this._renderVcAuth(panel, overlay);
+      return;
+    }
+
+    if (!linkInfo.linked) {
+      await this._renderVcProjectPicker(panel, overlay, dir);
+      return;
+    }
+
+    // Linked — show tabs
+    await this._renderVcLinked(panel, overlay, dir, linkInfo);
+  }
+
+  _renderVcAuth(panel, overlay) {
+    const section = h('div', { className: 'vc-auth-section' });
+    section.appendChild(h('div', { className: 'vc-section-title' }, 'Connect to Vercel'));
+    section.appendChild(h('div', { className: 'vc-hint' }, 'Enter your Vercel Personal Access Token from Settings > Tokens.'));
+
+    const tokenInput = h('input', {
+      className: 'vc-input',
+      type: 'password',
+      placeholder: '...',
+    });
+    const statusMsg = h('div', { className: 'vc-status-msg' });
+
+    section.appendChild(tokenInput);
+    section.appendChild(h('div', { className: 'vc-actions' },
+      statusMsg,
+      h('button', {
+        className: 'vc-btn vc-btn-primary',
+        onClick: async (e) => {
+          const token = tokenInput.value.trim();
+          if (!token) return;
+          e.target.disabled = true;
+          e.target.textContent = 'Connecting...';
+          try {
+            await api.post('/api/vercel/auth', { token });
+            overlay.remove();
+            this.showVercelPanel();
+          } catch (err) {
+            statusMsg.textContent = err.message || 'Invalid token';
+            e.target.disabled = false;
+            e.target.textContent = 'Connect';
+          }
+        },
+      }, 'Connect'),
+    ));
+
+    panel.appendChild(section);
+  }
+
+  async _renderVcProjectPicker(panel, overlay, dir) {
+    const section = h('div', { className: 'vc-auth-section' });
+    section.appendChild(h('div', { className: 'vc-section-title' }, 'Link a project'));
+    section.appendChild(h('div', { className: 'vc-hint' }, 'Select a Vercel project to link to this workspace.'));
+
+    const statusMsg = h('div', { className: 'vc-status-msg' });
+    const listEl = h('div', { className: 'vc-project-list' });
+
+    try {
+      const projects = await api.get('/api/vercel/projects');
+      if (projects.length === 0) {
+        listEl.appendChild(h('div', { className: 'vc-empty' }, 'No projects found'));
+      } else {
+        for (const p of projects) {
+          const item = h('div', {
+            className: 'vc-project-item',
+            onClick: async () => {
+              item.classList.add('loading');
+              try {
+                await api.post('/api/vercel/link', {
+                  dir,
+                  projectId: p.id,
+                  projectName: p.name,
+                });
+                overlay.remove();
+                this.showVercelPanel();
+              } catch (err) {
+                statusMsg.textContent = err.message;
+                item.classList.remove('loading');
+              }
+            },
+          },
+            h('div', { className: 'vc-project-info' },
+              h('div', { className: 'vc-project-name' }, p.name),
+              h('div', { className: 'vc-project-meta' },
+                [p.framework, p.gitRepo].filter(Boolean).join(' \u00B7 ') || p.id,
+              ),
+            ),
+          );
+          listEl.appendChild(item);
+        }
+      }
+    } catch (err) {
+      listEl.appendChild(h('div', { className: 'vc-empty' }, 'Failed to load projects'));
+    }
+
+    section.appendChild(listEl);
+    section.appendChild(statusMsg);
+
+    // Sign out option
+    section.appendChild(h('div', { className: 'vc-footer' },
+      h('button', {
+        className: 'vc-btn vc-btn-secondary',
+        onClick: async () => {
+          await api.del('/api/vercel/auth');
+          overlay.remove();
+          this.showVercelPanel();
+        },
+      }, 'Sign out'),
+    ));
+
+    panel.appendChild(section);
+  }
+
+  async _renderVcLinked(panel, overlay, dir, linkInfo) {
+    // Project info bar
+    panel.appendChild(h('div', { className: 'vc-project-bar' },
+      h('div', { className: 'vc-project-dot active' }),
+      h('span', { className: 'vc-project-bar-name' }, linkInfo.projectName || linkInfo.projectId),
+    ));
+
+    // Tabs
+    const tabContent = h('div', { className: 'vc-tab-content' });
+    let activeTab = 'deployments';
+
+    const renderTab = async (tab) => {
+      activeTab = tab;
+      tabs.querySelectorAll('.vc-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+      tabContent.innerHTML = '';
+
+      if (tab === 'deployments') {
+        await this._renderVcDeployments(tabContent, dir);
+      } else if (tab === 'env') {
+        await this._renderVcEnv(tabContent, dir);
+      } else if (tab === 'settings') {
+        this._renderVcSettings(tabContent, dir, linkInfo, overlay);
+      }
+    };
+
+    const tabs = h('div', { className: 'vc-tabs' },
+      h('div', { className: 'vc-tab active', dataset: { tab: 'deployments' }, onClick: () => renderTab('deployments') }, 'Deployments'),
+      h('div', { className: 'vc-tab', dataset: { tab: 'env' }, onClick: () => renderTab('env') }, 'Env'),
+      h('div', { className: 'vc-tab', dataset: { tab: 'settings' }, onClick: () => renderTab('settings') }, 'Settings'),
+    );
+    panel.appendChild(tabs);
+    panel.appendChild(tabContent);
+
+    renderTab('deployments');
+  }
+
+  async _renderVcDeployments(container, dir) {
+    const headerRow = h('div', { className: 'vc-deploy-header' },
+      h('div', { className: 'vc-section-title' }, 'Deployments'),
+      h('button', {
+        className: 'vc-btn vc-btn-primary',
+        onClick: async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Deploying...';
+          try {
+            await api.post('/api/vercel/deploy', { dir });
+            e.target.textContent = 'Triggered';
+            // Refresh deployments after a short delay
+            setTimeout(() => {
+              container.innerHTML = '';
+              this._renderVcDeployments(container, dir);
+            }, 2000);
+          } catch (err) {
+            e.target.textContent = 'Deploy';
+            e.target.disabled = false;
+          }
+        },
+      }, 'Deploy'),
+    );
+    container.appendChild(headerRow);
+
+    const loadingEl = h('div', { className: 'vc-loading' }, 'Loading deployments...');
+    container.appendChild(loadingEl);
+
+    try {
+      const data = await api.get(`/api/vercel/deployments?dir=${encodeURIComponent(dir)}`);
+      loadingEl.remove();
+
+      if (!data.deployments || data.deployments.length === 0) {
+        container.appendChild(h('div', { className: 'vc-empty' }, 'No deployments yet'));
+        return;
+      }
+
+      const list = h('div', { className: 'vc-deploy-list' });
+
+      for (const dep of data.deployments) {
+        const statusClass =
+          dep.state === 'READY' ? 'ready' :
+          dep.state === 'BUILDING' || dep.state === 'QUEUED' || dep.state === 'INITIALIZING' ? 'building' :
+          dep.state === 'ERROR' ? 'error' :
+          'canceled';
+
+        const created = dep.created ? this._timeAgo(new Date(dep.created)) : '';
+        const url = dep.url ? (dep.url.length > 40 ? dep.url.slice(0, 40) + '...' : dep.url) : '';
+        const commitMsg = dep.meta?.githubCommitMessage || dep.meta?.gitlabCommitMessage || '';
+
+        const row = h('div', { className: `vc-deploy-row ${dep.state === 'ERROR' ? 'clickable' : ''}` },
+          h('div', { className: `vc-deploy-dot ${statusClass}` }),
+          h('div', { className: 'vc-deploy-info' },
+            h('div', { className: 'vc-deploy-url' }, url || dep.uid?.slice(0, 12) || 'Deployment'),
+            h('div', { className: 'vc-deploy-meta' },
+              [dep.target || 'preview', created, commitMsg].filter(Boolean).join(' \u00B7 '),
+            ),
+          ),
+        );
+
+        if (dep.state === 'ERROR') {
+          let expanded = false;
+          let logContainer = null;
+
+          row.addEventListener('click', async () => {
+            if (expanded) {
+              if (logContainer) logContainer.remove();
+              logContainer = null;
+              expanded = false;
+              return;
+            }
+
+            expanded = true;
+            logContainer = h('div', { className: 'vc-log-container' });
+            const logLoading = h('div', { className: 'vc-loading' }, 'Loading error logs...');
+            logContainer.appendChild(logLoading);
+            row.after(logContainer);
+
+            try {
+              const logData = await api.get(`/api/vercel/deployments/${dep.uid}/logs?dir=${encodeURIComponent(dir)}&errors=true`);
+              logLoading.remove();
+
+              const errorText = (logData.logs || []).map(l => l.text || l.payload || '').join('\n');
+
+              if (!errorText.trim()) {
+                logContainer.appendChild(h('div', { className: 'vc-empty' }, 'No error logs found'));
+              } else {
+                const logBlock = h('pre', { className: 'vc-log-block' });
+                logBlock.textContent = errorText;
+                logContainer.appendChild(logBlock);
+              }
+
+              // Action buttons
+              const actions = h('div', { className: 'vc-log-actions' },
+                h('button', {
+                  className: 'vc-btn vc-btn-primary',
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    const chatInput = document.querySelector('.chat-input');
+                    if (chatInput) {
+                      chatInput.value = `Fix this Vercel build error:\n\n${errorText}`;
+                      chatInput.focus();
+                      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+                      // Auto-submit
+                      chatInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                      // Close the overlay
+                      const overlay = logContainer.closest('.vc-overlay');
+                      if (overlay) overlay.remove();
+                    }
+                  },
+                }, 'Fix with AI'),
+                h('button', {
+                  className: 'vc-btn vc-btn-secondary',
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(errorText).then(() => {
+                      e.target.textContent = 'Copied!';
+                      setTimeout(() => { e.target.textContent = 'Copy errors'; }, 1500);
+                    });
+                  },
+                }, 'Copy errors'),
+              );
+              logContainer.appendChild(actions);
+            } catch (err) {
+              logLoading.textContent = 'Failed to load logs';
+            }
+          });
+        }
+
+        list.appendChild(row);
+      }
+
+      container.appendChild(list);
+    } catch (err) {
+      loadingEl.textContent = err.message || 'Failed to load deployments';
+    }
+  }
+
+  async _renderVcEnv(container, dir) {
+    const loadingEl = h('div', { className: 'vc-loading' }, 'Loading environment variables...');
+    container.appendChild(loadingEl);
+
+    try {
+      const data = await api.get(`/api/vercel/env?dir=${encodeURIComponent(dir)}`);
+      loadingEl.remove();
+
+      if (!data.envs || data.envs.length === 0) {
+        container.appendChild(h('div', { className: 'vc-empty' }, 'No environment variables'));
+      } else {
+        const list = h('div', { className: 'vc-env-list' });
+        for (const env of data.envs) {
+          const targets = (env.target || []).join(', ');
+          list.appendChild(h('div', { className: 'vc-env-row' },
+            h('div', { className: 'vc-env-key' }, env.key),
+            h('div', { className: 'vc-env-value' }, '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'),
+            h('div', { className: 'vc-env-targets' }, targets),
+          ));
+        }
+        container.appendChild(list);
+      }
+
+      // Add new env var form
+      const addSection = h('div', { className: 'vc-env-add' });
+      const statusMsg = h('div', { className: 'vc-status-msg' });
+
+      let formVisible = false;
+      const formContainer = h('div', { className: 'vc-env-form', style: 'display:none' });
+
+      const keyInput = h('input', { className: 'vc-input', placeholder: 'KEY' });
+      const valueInput = h('input', { className: 'vc-input', placeholder: 'Value' });
+
+      // Target checkboxes
+      const targets = ['production', 'preview', 'development'];
+      const targetChecks = {};
+      const targetRow = h('div', { className: 'vc-env-target-row' });
+      for (const t of targets) {
+        const cb = h('input', { type: 'checkbox', checked: true });
+        targetChecks[t] = cb;
+        targetRow.appendChild(h('label', { className: 'vc-env-target-label' },
+          cb,
+          h('span', {}, t),
+        ));
+      }
+
+      formContainer.appendChild(keyInput);
+      formContainer.appendChild(valueInput);
+      formContainer.appendChild(targetRow);
+      formContainer.appendChild(h('div', { className: 'vc-actions' },
+        statusMsg,
+        h('button', {
+          className: 'vc-btn vc-btn-primary',
+          onClick: async (e) => {
+            const key = keyInput.value.trim();
+            const value = valueInput.value;
+            if (!key) return;
+
+            const selectedTargets = targets.filter(t => targetChecks[t].checked);
+            if (selectedTargets.length === 0) {
+              statusMsg.textContent = 'Select at least one target';
+              return;
+            }
+
+            e.target.disabled = true;
+            e.target.textContent = 'Saving...';
+            try {
+              await api.post('/api/vercel/env', { dir, key, value, target: selectedTargets });
+              // Refresh
+              container.innerHTML = '';
+              await this._renderVcEnv(container, dir);
+            } catch (err) {
+              statusMsg.textContent = err.message || 'Failed to add variable';
+              e.target.disabled = false;
+              e.target.textContent = 'Save';
+            }
+          },
+        }, 'Save'),
+      ));
+
+      addSection.appendChild(h('button', {
+        className: 'vc-btn vc-btn-secondary',
+        onClick: () => {
+          formVisible = !formVisible;
+          formContainer.style.display = formVisible ? '' : 'none';
+        },
+      }, '+ Add variable'));
+      addSection.appendChild(formContainer);
+      container.appendChild(addSection);
+    } catch (err) {
+      loadingEl.textContent = err.message || 'Failed to load environment variables';
+    }
+  }
+
+  _renderVcSettings(container, dir, linkInfo, overlay) {
+    // Project info
+    container.appendChild(h('div', { className: 'vc-section-title' }, 'Linked project'));
+    container.appendChild(h('div', { className: 'vc-auth-section' },
+      h('div', { className: 'vc-setting-row' },
+        h('span', { className: 'vc-setting-label' }, 'Project'),
+        h('span', { className: 'vc-setting-value' }, linkInfo.projectName),
+      ),
+      h('div', { className: 'vc-setting-row' },
+        h('span', { className: 'vc-setting-label' }, 'ID'),
+        h('span', { className: 'vc-setting-value mono' }, linkInfo.projectId),
+      ),
+    ));
+
+    // Unlink + Sign out
+    const statusMsg = h('div', { className: 'vc-status-msg' });
+    container.appendChild(h('div', { className: 'vc-auth-section' },
+      h('div', { className: 'vc-actions' },
+        h('button', {
+          className: 'vc-btn vc-btn-secondary',
+          onClick: async () => {
+            await api.del('/api/vercel/link', { dir });
+            overlay.remove();
+            this.showVercelPanel();
+          },
+        }, 'Unlink project'),
+        h('button', {
+          className: 'vc-btn vc-btn-secondary',
+          onClick: async () => {
+            await api.del('/api/vercel/auth');
+            overlay.remove();
+            this.showVercelPanel();
+          },
+        }, 'Sign out'),
+      ),
+      statusMsg,
+    ));
+  }
+
   // Git branch
   async loadGitBranch() {
     try {
@@ -5744,10 +6218,18 @@ export class EditorView {
 
   // Auto-update listener (Tauri only)
   async listenForUpdates() {
-    try {
-      const data = await api.get('/api/update-check');
-      if (data.available) this.showUpdateBanner(data.latestVersion);
-    } catch {}
+    const check = async () => {
+      try {
+        const data = await api.get('/api/update-check');
+        if (data.available) { this.showUpdateBanner(data.latestVersion); return true; }
+      } catch {}
+      return false;
+    };
+    // Check immediately, then every 5 min until an update is found
+    if (await check()) return;
+    this._updateInterval = setInterval(async () => {
+      if (await check()) clearInterval(this._updateInterval);
+    }, 5 * 60 * 1000);
   }
 
   showUpdateBanner(version) {
@@ -5756,11 +6238,39 @@ export class EditorView {
     const btn = h('button', {
       className: 'update-toast__btn',
       onClick: async () => {
-        btn.textContent = 'Installing…';
-        btn.disabled = true;
-        try { await api.post('/api/install-update'); } catch {}
+        btn.style.display = 'none';
+        closeBtn.style.display = 'none';
+        progressWrap.style.display = '';
+        try {
+          await api.post('/api/install-update');
+          const poll = setInterval(async () => {
+            try {
+              const { progress } = await api.get('/api/install-update/status');
+              if (!progress) return;
+              const labels = { downloading: 'Downloading', installing: 'Installing', restarting: 'Restarting' };
+              progressLabel.textContent = `${labels[progress.stage] || progress.stage}...`;
+              progressBar.style.width = `${progress.percent || 0}%`;
+              if (progress.stage === 'installing') progressBar.style.width = '100%';
+              if (progress.stage === 'restarting') {
+                progressLabel.textContent = 'Restarting...';
+                progressBar.style.width = '100%';
+                clearInterval(poll);
+              }
+            } catch {}
+          }, 300);
+        } catch {}
       },
     }, 'Update');
+
+    const progressBar = h('div', { className: 'update-toast__progress-bar' });
+    const progressTrack = h('div', { className: 'update-toast__progress-track' }, progressBar);
+    const progressLabel = h('div', { className: 'update-toast__progress-label' }, 'Downloading...');
+    const progressWrap = h('div', { className: 'update-toast__progress', style: 'display:none' }, progressLabel, progressTrack);
+
+    const closeBtn = h('button', {
+      className: 'update-toast__close',
+      onClick: () => toast.remove(),
+    }, '\u2715');
 
     const toast = h('div', { className: 'update-toast' },
       h('div', { className: 'update-toast__text' },
@@ -5768,10 +6278,8 @@ export class EditorView {
         h('span', { className: 'update-toast__version' }, `v${version}`),
       ),
       btn,
-      h('button', {
-        className: 'update-toast__close',
-        onClick: () => toast.remove(),
-      }, '\u2715'),
+      progressWrap,
+      closeBtn,
     );
     document.body.appendChild(toast);
   }

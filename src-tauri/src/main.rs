@@ -247,8 +247,48 @@ fn main() {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
 
-                    // Download, install, and restart.
-                    let _ = update.download_and_install(|_, _| {}, || {}).await;
+                    // Download, install, and restart — report progress to sidecar.
+                    let progress_url = format!("http://localhost:{}/api/install-update/progress", update_port);
+                    let client = reqwest::Client::new();
+                    let dl_url = progress_url.clone();
+                    let dl_client = client.clone();
+                    let _ = update.download_and_install(
+                        move |chunk_len, content_len| {
+                            // content_len is Option<u64>
+                            let percent = content_len.map(|total| {
+                                if total == 0 { 0 } else {
+                                    // chunk_len is cumulative bytes received
+                                    ((chunk_len as f64 / total as f64) * 100.0) as u64
+                                }
+                            }).unwrap_or(0);
+                            let url = dl_url.clone();
+                            let c = dl_client.clone();
+                            tokio::spawn(async move {
+                                let _ = c.post(&url)
+                                    .json(&serde_json::json!({ "stage": "downloading", "percent": percent }))
+                                    .send().await;
+                            });
+                        },
+                        {
+                            let url = progress_url.clone();
+                            let c = client.clone();
+                            move || {
+                                let url = url.clone();
+                                let c = c.clone();
+                                tokio::spawn(async move {
+                                    let _ = c.post(&url)
+                                        .json(&serde_json::json!({ "stage": "installing", "percent": 100 }))
+                                        .send().await;
+                                });
+                            }
+                        },
+                    ).await;
+
+                    // Brief pause so frontend can show "Restarting..."
+                    let _ = client.post(&progress_url)
+                        .json(&serde_json::json!({ "stage": "restarting", "percent": 100 }))
+                        .send().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     handle.restart();
                 });
             }

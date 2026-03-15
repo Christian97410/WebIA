@@ -2922,6 +2922,474 @@
   opacity: 1;
 }
 
+/* ── Vercel Panel ── */
+
+.vc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8000;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.vc-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.vc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.vc-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vc-header-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.vc-close {
+  color: var(--text-tertiary);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.vc-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.vc-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.vc-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+}
+
+.vc-tab {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.vc-tab:hover {
+  color: var(--text-secondary);
+}
+
+.vc-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--text-primary);
+}
+
+.vc-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 200px;
+}
+
+.vc-section-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 16px 4px;
+}
+
+.vc-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  padding: 0 16px 8px;
+}
+
+.vc-auth-section {
+  padding: 8px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vc-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  outline: none;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.vc-input:focus {
+  border-color: var(--accent);
+}
+
+.vc-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vc-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: none;
+  transition: background var(--transition-fast);
+  white-space: nowrap;
+}
+
+.vc-btn-primary {
+  background: var(--text-primary);
+  color: var(--bg-panel);
+}
+
+.vc-btn-primary:hover {
+  opacity: 0.85;
+}
+
+.vc-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vc-btn-secondary {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.vc-btn-secondary:hover {
+  background: var(--border);
+}
+
+.vc-status-msg {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-height: 16px;
+}
+
+.vc-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* Project picker */
+.vc-project-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.vc-project-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.vc-project-item:hover {
+  background: var(--bg-hover);
+}
+
+.vc-project-item.loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.vc-project-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.vc-project-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.vc-project-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vc-project-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.vc-project-bar-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.vc-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+/* Deployments */
+.vc-deploy-list { }
+
+.vc-deploy-item {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.vc-deploy-item:hover {
+  background: var(--bg-hover);
+}
+
+.vc-deploy-item:last-child {
+  border-bottom: none;
+}
+
+.vc-deploy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vc-deploy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vc-deploy-dot.ready { background: #3ecf8e; }
+.vc-deploy-dot.building, .vc-deploy-dot.queued, .vc-deploy-dot.initializing { background: #f5a623; }
+.vc-deploy-dot.error { background: #e5534b; }
+.vc-deploy-dot.canceled { background: var(--text-tertiary); }
+
+.vc-deploy-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.vc-deploy-url {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vc-deploy-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.vc-deploy-target {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.vc-deploy-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* Error logs */
+.vc-deploy-logs {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.vc-log-block {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e5534b;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vc-log-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.vc-btn-fix {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: none;
+  background: #e5534b;
+  color: #fff;
+  font-weight: 500;
+  transition: opacity var(--transition-fast);
+}
+
+.vc-btn-fix:hover {
+  opacity: 0.85;
+}
+
+/* Env vars */
+.vc-env-list { }
+
+.vc-env-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.vc-env-item:last-child {
+  border-bottom: none;
+}
+
+.vc-env-key {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.vc-env-targets {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.vc-env-form {
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.vc-env-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.vc-env-form-row input[type="text"] {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  outline: none;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.vc-env-form-row input:focus {
+  border-color: var(--accent);
+}
+
+.vc-env-targets-check {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.vc-env-targets-check label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+
+/* Settings */
+.vc-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.vc-setting-label {
+  color: var(--text-tertiary);
+}
+
+.vc-setting-value {
+  color: var(--text-secondary);
+}
+
+.vc-setting-value.mono {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+}
+
+/* Topbar Vercel button */
+.topbar-btn--vercel svg {
+  opacity: 0.7;
+}
+
+.topbar-btn--vercel:hover svg {
+  opacity: 1;
+}
+
 /* Code editor mode */
 .code-editor-wrapper {
   flex: 1;
