@@ -1,21 +1,21 @@
 import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
-import { createRequire } from 'module';
 
-const _require = createRequire(import.meta.url);
-
-// Try to load node-pty for proper terminal emulation
+// Try to load node-pty for proper terminal emulation (lazy loaded).
+// node-pty is a native module — it cannot be bundled into a SEA binary,
+// so we guard the require behind a try/catch. We also avoid calling
+// createRequire(import.meta.url) at the top level because esbuild
+// bundles this file as CJS for the SEA, where import.meta.url is undefined.
 let pty = null;
 let ptyChecked = false;
 function getPty() {
   if (ptyChecked) return pty;
   ptyChecked = true;
   try {
-    pty = _require('node-pty');
-    console.log('[terminal] node-pty loaded OK');
-  } catch (e) {
-    console.warn('[terminal] node-pty not available:', e.message);
+    pty = require('node-pty');
+  } catch {
+    // node-pty not available — fall back to basic pipes
   }
   return pty;
 }
