@@ -224,3 +224,43 @@ class App {
 
 const app = new App();
 app.init();
+
+// Standalone update check — runs regardless of view errors
+setTimeout(async () => {
+  try {
+    const data = await api.get('/api/update-check');
+    if (data.available && !document.querySelector('.update-toast')) {
+      const toast = document.createElement('div');
+      toast.className = 'update-toast';
+      toast.innerHTML = `
+        <div class="update-toast__text">New version: <span class="update-toast__version">v${data.latestVersion}</span></div>
+        <button class="update-toast__btn" id="wia-update-btn">Update</button>
+        <div class="update-toast__progress" style="display:none" id="wia-update-progress">
+          <div class="update-toast__progress-label">Downloading...</div>
+          <div class="update-toast__progress-track"><div class="update-toast__progress-bar" id="wia-update-bar"></div></div>
+        </div>
+        <button class="update-toast__close" id="wia-update-close">\u2715</button>`;
+      document.body.appendChild(toast);
+      document.getElementById('wia-update-close').onclick = () => toast.remove();
+      document.getElementById('wia-update-btn').onclick = async () => {
+        document.getElementById('wia-update-btn').style.display = 'none';
+        document.getElementById('wia-update-close').style.display = 'none';
+        document.getElementById('wia-update-progress').style.display = '';
+        await api.post('/api/install-update');
+        const poll = setInterval(async () => {
+          try {
+            const { progress } = await api.get('/api/install-update/status');
+            if (!progress) return;
+            const labels = { downloading: 'Downloading', installing: 'Installing', restarting: 'Restarting' };
+            toast.querySelector('.update-toast__progress-label').textContent = `${labels[progress.stage] || progress.stage}...`;
+            document.getElementById('wia-update-bar').style.width = `${progress.percent || 0}%`;
+            if (progress.stage === 'installing' || progress.stage === 'restarting') {
+              document.getElementById('wia-update-bar').style.width = '100%';
+              if (progress.stage === 'restarting') clearInterval(poll);
+            }
+          } catch {}
+        }, 300);
+      };
+    }
+  } catch {}
+}, 5000);

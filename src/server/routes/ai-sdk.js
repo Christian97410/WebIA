@@ -131,7 +131,7 @@ export function createAISDKRouter() {
 
   // ── POST /chat ──────────────────────────────────────────────────────────────
   router.post('/chat', async (req, res) => {
-    const { prompt, context, projectPath, sessionId, editMode } = req.body;
+    const { prompt, context, projectPath, sessionId, editMode, images } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: 'prompt required' });
@@ -182,6 +182,22 @@ export function createAISDKRouter() {
         prevChild.kill('SIGTERM');
       }
 
+      // Save attached images to temp dir so Claude CLI can read them
+      const imagePaths = [];
+      if (images && images.length > 0) {
+        const tempDir = join(resolvedPath, '.wia-temp');
+        await mkdir(tempDir, { recursive: true });
+        for (const img of images) {
+          const ext = img.type.split('/')[1] || 'png';
+          const filename = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+          const filePath = join(tempDir, filename);
+          // Strip data URL prefix to get raw base64
+          const base64Data = img.data.replace(/^data:[^;]+;base64,/, '');
+          await writeFile(filePath, Buffer.from(base64Data, 'base64'));
+          imagePaths.push(filePath);
+        }
+      }
+
       // First user message = create session, subsequent = resume
       const userMsgCount = session.messages.filter(m => m.role === 'user').length;
       const isResume = userMsgCount > 1;
@@ -194,6 +210,7 @@ export function createAISDKRouter() {
         isResume,
         messages: session.messages,
         editMode: editMode || 'auto',
+        imagePaths,
         onEvent(event) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         },
@@ -235,6 +252,13 @@ export function createAISDKRouter() {
               })),
             })}\n\n`
           );
+        }
+      }
+
+      // Clean up temp images
+      if (imagePaths.length > 0) {
+        for (const p of imagePaths) {
+          try { await rm(p, { force: true }); } catch {}
         }
       }
 
@@ -319,6 +343,19 @@ export function createAISDKRouter() {
     res.json({ rejected: true });
   });
 
+  // ── POST /abort ─────────────────────────────────────────────────────────────
+  router.post('/abort', (req, res) => {
+    const { sessionId } = req.body;
+    if (sessionId) {
+      const child = activeProcesses.get(sessionId);
+      if (child && !child.killed) {
+        child.kill('SIGTERM');
+        activeProcesses.delete(sessionId);
+      }
+    }
+    res.json({ aborted: true });
+  });
+
   // ── GET /status ─────────────────────────────────────────────────────────────
   router.get('/status', (req, res) => {
     res.json({
@@ -332,12 +369,18 @@ export function createAISDKRouter() {
 
 // ── CLI Agent runner ─────────────────────────────────────────────────────────
 
-function runCLIAgent({ projectPath, systemPrompt, messages, editMode, sessionId, isResume, onEvent }) {
+function runCLIAgent({ projectPath, systemPrompt, messages, editMode, sessionId, isResume, imagePaths, onEvent }) {
   const claudePath = resolveCmd('claude');
   const env = shellEnv();
 
   // Only send the latest user message — CLI manages history via session/resume.
-  const fullPrompt = messages[messages.length - 1]?.content || '';
+  let fullPrompt = messages[messages.length - 1]?.content || '';
+
+  // Append image references so Claude can read them
+  if (imagePaths && imagePaths.length > 0) {
+    const refs = imagePaths.map(p => `[Attached image: ${p}]`).join('\n');
+    fullPrompt = fullPrompt ? `${fullPrompt}\n\n${refs}` : refs;
+  }
 
   let childRef = null;
   const promise = new Promise((resolve, reject) => {
@@ -472,17 +515,30 @@ function processStreamMessage(msg, { onEvent, responseText, changes }) {
     if (msg.content_block?.type === 'thinking') {
       onEvent({ type: 'thinking', content: msg.content_block.thinking || '' });
     }
-  } else if (msg.type === 'tool_result') {
-    // Forward tool results to client (Bash output, etc.)
-    const content = msg.content || msg.output || '';
-    const toolName = msg.tool_name || msg.name || '';
-    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(b => b.text || '').join('') : JSON.stringify(content);
-    if (text) {
-      onEvent({ type: 'tool_result', tool: toolName, content: text, tool_use_id: msg.tool_use_id || '' });
+  } else if (msg.type === 'tool_result' || (msg.type === 'user' && msg.message?.role === 'user')) {
+    // Claude CLI stream-json: tool results come as type 'tool_result' or as 'user' message with tool_result content blocks
+    let blocks = [];
+    if (msg.type === 'tool_result') {
+      blocks = [{ content: msg.content || msg.output || '', tool_use_id: msg.tool_use_id }];
+    } else if (msg.message?.content && Array.isArray(msg.message.content)) {
+      blocks = msg.message.content.filter(b => b.type === 'tool_result');
+    }
+    for (const block of blocks) {
+      const raw = block.content || block.output || '';
+      const text = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw.map(b => b.text || '').join('') : JSON.stringify(raw);
+      if (text) {
+        onEvent({ type: 'tool_result', tool: block.tool_name || '', content: text, tool_use_id: block.tool_use_id || '' });
+      }
     }
   } else if (msg.type === 'result') {
     console.log('[AI-SDK] result:', JSON.stringify({ usage: msg.usage, cost: msg.total_cost_usd, session_id: msg.session_id, num_turns: msg.num_turns, is_error: msg.is_error, subtype: msg.subtype }, null, 2));
     onEvent({ type: 'done', usage: msg.usage || null, cost: msg.total_cost_usd || null });
+  } else {
+    // Log unhandled message types for debugging
+    const preview = JSON.stringify(msg).slice(0, 200);
+    if (!['message_start', 'message_delta', 'message_stop', 'content_block_stop'].includes(msg.type)) {
+      console.log(`[AI-SDK] unhandled msg type="${msg.type}":`, preview);
+    }
   }
 }
 

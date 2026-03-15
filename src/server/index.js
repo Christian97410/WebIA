@@ -40,7 +40,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
 
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '20mb' }));
 
   // Allow cross-origin API access (needed when Tauri WebView navigates
   // from the tauri:// protocol to http://localhost — origin may differ).

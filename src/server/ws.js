@@ -24,8 +24,8 @@ function getPty() {
 export function setupWebSocket(wss) {
   wss.on('connection', (ws) => {
     let projectWatcher = null;
-    let terminalProcess = null;
-    let usePty = !!getPty();
+    const terminals = new Map(); // id -> { process, isPty }
+    const usePty = !!getPty();
 
     const safeSend = (data) => {
       if (ws.readyState === 1) ws.send(JSON.stringify(data));
@@ -61,10 +61,13 @@ export function setupWebSocket(wss) {
 
       // Terminal: spawn a shell session
       if (msg.type === 'terminal-start') {
-        if (terminalProcess) {
-          if (usePty) terminalProcess.kill();
-          else terminalProcess.kill();
-          terminalProcess = null;
+        const id = msg.id || 'default';
+
+        // Kill existing terminal with same id
+        const existing = terminals.get(id);
+        if (existing) {
+          existing.process.kill();
+          terminals.delete(id);
         }
 
         const shell = platform() === 'win32' ? 'cmd.exe' : (process.env.SHELL || '/bin/zsh');
@@ -72,10 +75,12 @@ export function setupWebSocket(wss) {
         const cols = msg.cols || 80;
         const rows = msg.rows || 24;
 
+        let spawned = false;
+
         if (usePty) {
           // Real PTY — full terminal emulation (colors, cursor, resize)
           try {
-            terminalProcess = getPty().spawn(shell, [], {
+            const proc = getPty().spawn(shell, [], {
               name: 'xterm-256color',
               cols,
               rows,
@@ -83,78 +88,110 @@ export function setupWebSocket(wss) {
               env: shellEnv({ LANG: 'en_US.UTF-8' }),
             });
 
-            terminalProcess.onData((data) => {
-              safeSend({ type: 'terminal-output', data });
+            terminals.set(id, { process: proc, isPty: true });
+
+            proc.onData((data) => {
+              safeSend({ type: 'terminal-output', id, data });
             });
 
-            terminalProcess.onExit(({ exitCode }) => {
-              safeSend({ type: 'terminal-exit', code: exitCode });
-              terminalProcess = null;
+            proc.onExit(({ exitCode }) => {
+              safeSend({ type: 'terminal-exit', id, code: exitCode });
+              terminals.delete(id);
             });
 
-            safeSend({ type: 'terminal-ready', shell, cwd, pty: true });
-            console.log('[terminal] PTY spawned OK:', shell, cwd);
+            safeSend({ type: 'terminal-ready', id, shell, cwd, pty: true });
+            console.log('[terminal] PTY spawned OK:', id, shell, cwd);
+            spawned = true;
           } catch (e) {
             console.error('[terminal] PTY spawn failed:', e.message);
-            usePty = false;
           }
         }
 
-        if (!usePty) {
-          // Fallback: use `script` to allocate a real PTY without node-pty.
-          // macOS: script -q /dev/null <shell>
-          // Linux: script -qc <shell> /dev/null
-          const isLinux = platform() === 'linux';
-          const scriptArgs = isLinux
-            ? ['-qc', shell, '/dev/null']
-            : ['-q', '/dev/null', shell];
-          terminalProcess = spawn('script', scriptArgs, {
+        if (!spawned) {
+          // Fallback: use Python pty.fork() to allocate a real PTY without node-pty.
+          // `script` doesn't work here because Node.js uses socketpairs for stdio
+          // and `script` calls tcgetattr() on stdin which fails on sockets.
+          // Python's pty.fork() creates a proper PTY without touching parent stdin.
+          const pyPty = `
+import pty,os,sys,select,signal
+pid,fd=pty.fork()
+if pid==0:
+ os.chdir(sys.argv[2])
+ os.execvp(sys.argv[1],[sys.argv[1]])
+else:
+ signal.signal(signal.SIGCHLD,lambda *a:os._exit(0))
+ while 1:
+  try:r,_,_=select.select([0,fd],[],[])
+  except:break
+  if 0 in r:
+   d=os.read(0,4096)
+   if not d:break
+   os.write(fd,d)
+  if fd in r:
+   try:d=os.read(fd,4096)
+   except:break
+   if not d:break
+   os.write(1,d)
+`;
+          const proc = spawn('python3', ['-c', pyPty, shell, cwd], {
             cwd,
             env: shellEnv({ TERM: 'xterm-256color', LANG: 'en_US.UTF-8' }),
             stdio: ['pipe', 'pipe', 'pipe'],
           });
 
-          terminalProcess.stdout.on('data', (data) => {
-            safeSend({ type: 'terminal-output', data: data.toString() });
+          terminals.set(id, { process: proc, isPty: false });
+
+          proc.stdout.on('data', (data) => {
+            safeSend({ type: 'terminal-output', id, data: data.toString() });
           });
 
-          terminalProcess.stderr.on('data', (data) => {
-            safeSend({ type: 'terminal-output', data: data.toString() });
+          proc.stderr.on('data', (data) => {
+            safeSend({ type: 'terminal-output', id, data: data.toString() });
           });
 
-          terminalProcess.on('exit', (code) => {
-            safeSend({ type: 'terminal-exit', code });
-            terminalProcess = null;
+          proc.on('exit', (code) => {
+            safeSend({ type: 'terminal-exit', id, code });
+            terminals.delete(id);
           });
 
-          safeSend({ type: 'terminal-ready', shell, cwd, pty: false });
+          safeSend({ type: 'terminal-ready', id, shell, cwd, pty: false });
         }
       }
 
       // Terminal: write stdin
-      if (msg.type === 'terminal-input' && terminalProcess) {
-        if (usePty) {
-          terminalProcess.write(msg.data);
-        } else {
-          terminalProcess.stdin.write(msg.data);
+      if (msg.type === 'terminal-input') {
+        const t = terminals.get(msg.id || 'default');
+        if (t) {
+          if (t.isPty) t.process.write(msg.data);
+          else t.process.stdin.write(msg.data);
         }
       }
 
       // Terminal: resize
-      if (msg.type === 'terminal-resize' && terminalProcess && usePty) {
-        try {
-          terminalProcess.resize(msg.cols, msg.rows);
-        } catch {}
+      if (msg.type === 'terminal-resize') {
+        const t = terminals.get(msg.id || 'default');
+        if (t?.isPty) {
+          try { t.process.resize(msg.cols, msg.rows); } catch {}
+        }
+      }
+
+      // Terminal: kill a specific instance
+      if (msg.type === 'terminal-kill') {
+        const id = msg.id || 'default';
+        const t = terminals.get(id);
+        if (t) {
+          t.process.kill();
+          terminals.delete(id);
+        }
       }
     });
 
     ws.on('close', () => {
       if (projectWatcher) projectWatcher.close();
-      if (terminalProcess) {
-        if (usePty) terminalProcess.kill();
-        else terminalProcess.kill();
-        terminalProcess = null;
+      for (const [, t] of terminals) {
+        t.process.kill();
       }
+      terminals.clear();
     });
   });
 }

@@ -555,12 +555,36 @@ export class EditorView {
       this.chatInput.style.height = Math.min(this.chatInput.scrollHeight, 120) + 'px';
     });
 
+    // Paste images from clipboard
+    this.chatInput.addEventListener('paste', (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItems = items.filter(item => item.type.startsWith('image/'));
+      if (!imageItems.length) return;
+      e.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) {
+          this._chatAttachedFiles.push(file);
+        }
+      }
+      this._updateAttachPreview();
+    });
+
+    const sendSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    const stopSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
     const sendBtn = h('button', { className: 'chat-send-btn', onClick: () => {
-      this.sendChatMessage(this.chatInput.value.trim());
-      this.chatInput.value = '';
-      this.chatInput.style.height = 'auto';
+      if (this._chatStreaming) {
+        this._abortChat();
+      } else {
+        this.sendChatMessage(this.chatInput.value.trim());
+        this.chatInput.value = '';
+        this.chatInput.style.height = 'auto';
+      }
     }});
-    sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    sendBtn.innerHTML = sendSvg;
+    this._chatSendBtn = sendBtn;
+    this._sendSvg = sendSvg;
+    this._stopSvg = stopSvg;
 
     // Attach file button
     const attachBtn = h('button', { className: 'chat-attach-btn', title: 'Attach file' });
@@ -667,27 +691,64 @@ export class EditorView {
     }
   }
 
-  // Terminal panel
+  // Terminal panel — multi-instance support
   renderTerminalPanel() {
     const panel = h('div', { className: 'terminal-panel' });
 
-    // xterm.js container
-    this._termContainer = h('div', { className: 'term-xterm-wrap' });
-    panel.appendChild(this._termContainer);
+    // Terminal toolbar: dropdown + new + kill
+    this._termToolbar = h('div', { className: 'term-toolbar' });
+
+    this._termSelect = h('select', {
+      className: 'term-select',
+      onChange: () => this._switchTerminalInstance(this._termSelect.value),
+    });
+    this._termToolbar.appendChild(this._termSelect);
+
+    const addBtn = h('button', {
+      className: 'term-toolbar-btn',
+      onClick: () => this._createTerminalInstance(),
+      title: 'New terminal',
+    });
+    addBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    this._termToolbar.appendChild(addBtn);
+
+    const killBtn = h('button', {
+      className: 'term-toolbar-btn',
+      onClick: () => this._killActiveTerminal(),
+      title: 'Kill terminal',
+    });
+    killBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    this._termToolbar.appendChild(killBtn);
+
+    panel.appendChild(this._termToolbar);
+
+    // Container for xterm instances
+    this._termInstances = new Map(); // id -> { xterm, fitAddon, container, started, name }
+    this._termCounter = 0;
+    this._activeTermId = null;
+    this._termBody = h('div', { className: 'term-body' });
+    panel.appendChild(this._termBody);
 
     return panel;
   }
 
-  _initXterm() {
-    if (this._xterm) return;
-
+  _createTerminalInstance() {
     const Terminal = window.Terminal;
+    if (!Terminal) return;
+
+    this._termCounter++;
+    const id = `term-${this._termCounter}`;
+    const shell = 'zsh';
+    const name = `${shell} ${this._termCounter}`;
+
     const FitAddon = window.FitAddon?.FitAddon || window.FitAddon;
     const WebLinksAddon = window.WebLinksAddon?.WebLinksAddon || window.WebLinksAddon;
 
-    if (!Terminal) return; // xterm.js not loaded
+    const container = h('div', { className: 'term-xterm-wrap' });
+    container.style.display = 'none';
+    this._termBody.appendChild(container);
 
-    this._xterm = new Terminal({
+    const xterm = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
       fontSize: 12,
@@ -719,65 +780,133 @@ export class EditorView {
       },
     });
 
-    this._fitAddon = FitAddon ? new FitAddon() : null;
-    if (this._fitAddon) this._xterm.loadAddon(this._fitAddon);
-    if (WebLinksAddon) this._xterm.loadAddon(new WebLinksAddon());
+    const fitAddon = FitAddon ? new FitAddon() : null;
+    if (fitAddon) xterm.loadAddon(fitAddon);
+    if (WebLinksAddon) xterm.loadAddon(new WebLinksAddon());
 
-    this._xterm.open(this._termContainer);
-    if (this._fitAddon) this._fitAddon.fit();
+    xterm.open(container);
 
     // Send input to server
-    this._xterm.onData((data) => {
+    xterm.onData((data) => {
       if (this.ws?.readyState === 1) {
-        this.ws.send(JSON.stringify({ type: 'terminal-input', data }));
+        this.ws.send(JSON.stringify({ type: 'terminal-input', id, data }));
       }
     });
 
     // Resize handling
-    this._termResizeObs = new ResizeObserver(() => {
-      if (this._fitAddon && this.terminalPanel.style.display !== 'none') {
+    const resizeObs = new ResizeObserver(() => {
+      if (fitAddon && container.style.display !== 'none') {
         try {
-          this._fitAddon.fit();
-          if (this.ws?.readyState === 1 && this._xterm) {
+          fitAddon.fit();
+          if (this.ws?.readyState === 1) {
             this.ws.send(JSON.stringify({
               type: 'terminal-resize',
-              cols: this._xterm.cols,
-              rows: this._xterm.rows,
+              id,
+              cols: xterm.cols,
+              rows: xterm.rows,
             }));
           }
         } catch {}
       }
     });
-    this._termResizeObs.observe(this._termContainer);
+    resizeObs.observe(container);
+
+    this._termInstances.set(id, { xterm, fitAddon, container, resizeObs, started: false, name });
+
+    // Update dropdown
+    const opt = h('option', { value: id }, name);
+    this._termSelect.appendChild(opt);
+
+    // Switch to this new instance
+    this._switchTerminalInstance(id);
+
+    return id;
   }
 
-  _termWrite(text) {
-    if (this._xterm) {
-      this._xterm.write(text);
+  _switchTerminalInstance(id) {
+    const inst = this._termInstances.get(id);
+    if (!inst) return;
+
+    // Hide all, show selected
+    for (const [tid, t] of this._termInstances) {
+      t.container.style.display = tid === id ? '' : 'none';
     }
+
+    this._activeTermId = id;
+    this._termSelect.value = id;
+
+    // Start if not started yet
+    if (!inst.started) {
+      inst.started = true;
+      if (this.ws?.readyState === 1) {
+        const cols = inst.xterm?.cols || 80;
+        const rows = inst.xterm?.rows || 24;
+        this.ws.send(JSON.stringify({
+          type: 'terminal-start',
+          id,
+          cwd: this.projectPath,
+          cols,
+          rows,
+        }));
+      }
+    }
+
+    // Refit and focus
+    requestAnimationFrame(() => {
+      if (inst.fitAddon) inst.fitAddon.fit();
+      inst.xterm?.focus();
+    });
   }
 
-  _termSendInput(data) {
+  _killActiveTerminal() {
+    const id = this._activeTermId;
+    if (!id) return;
+
+    const inst = this._termInstances.get(id);
+    if (!inst) return;
+
+    // Tell server to kill
     if (this.ws?.readyState === 1) {
-      this.ws.send(JSON.stringify({ type: 'terminal-input', data }));
+      this.ws.send(JSON.stringify({ type: 'terminal-kill', id }));
     }
+
+    // Clean up
+    inst.resizeObs?.disconnect();
+    inst.xterm?.dispose();
+    inst.container.remove();
+    this._termInstances.delete(id);
+
+    // Remove from dropdown
+    const opt = this._termSelect.querySelector(`option[value="${id}"]`);
+    if (opt) opt.remove();
+
+    // Switch to another terminal or create one if none left
+    if (this._termInstances.size > 0) {
+      const nextId = this._termInstances.keys().next().value;
+      this._switchTerminalInstance(nextId);
+    } else {
+      this._activeTermId = null;
+    }
+  }
+
+  _termWrite(id, text) {
+    const inst = this._termInstances.get(id);
+    if (inst) inst.xterm.write(text);
   }
 
   _startTerminal() {
-    if (this._termStarted) return;
-    this._termStarted = true;
-
-    this._initXterm();
-
-    if (this.ws?.readyState === 1) {
-      const cols = this._xterm?.cols || 80;
-      const rows = this._xterm?.rows || 24;
-      this.ws.send(JSON.stringify({
-        type: 'terminal-start',
-        cwd: this.projectPath,
-        cols,
-        rows,
-      }));
+    // Create first instance if none exist
+    if (this._termInstances.size === 0) {
+      this._createTerminalInstance();
+    } else if (this._activeTermId) {
+      // Refit active instance
+      const inst = this._termInstances.get(this._activeTermId);
+      if (inst?.fitAddon) {
+        requestAnimationFrame(() => {
+          inst.fitAddon.fit();
+          inst.xterm?.focus();
+        });
+      }
     }
   }
 
@@ -792,11 +921,6 @@ export class EditorView {
 
     if (tab === 'terminal') {
       this._startTerminal();
-      // Refit after display change
-      requestAnimationFrame(() => {
-        if (this._fitAddon) this._fitAddon.fit();
-        this._xterm?.focus();
-      });
     }
   }
 
@@ -2812,18 +2936,39 @@ export class EditorView {
   _updateAttachPreview() {
     if (!this._chatAttachedFiles.length) {
       this._chatAttachPreview.style.display = 'none';
+      this._chatAttachPreview.innerHTML = '';
       return;
     }
     this._chatAttachPreview.style.display = 'flex';
-    this._chatAttachPreview.innerHTML = this._chatAttachedFiles
-      .map((f, i) =>
-        `<span class="chat-attach-chip">${f.name}<button data-idx="${i}">&times;</button></span>`
-      ).join('');
-    this._chatAttachPreview.querySelectorAll('button').forEach(btn => {
+    this._chatAttachPreview.innerHTML = '';
+
+    this._chatAttachedFiles.forEach((f, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'chat-attach-chip';
+
+      if (f.type.startsWith('image/')) {
+        const thumb = document.createElement('img');
+        thumb.className = 'chat-attach-thumb';
+        const url = URL.createObjectURL(f);
+        thumb.src = url;
+        thumb.onload = () => URL.revokeObjectURL(url);
+        chip.appendChild(thumb);
+      }
+
+      const label = document.createElement('span');
+      label.textContent = f.name || 'Pasted image';
+      chip.appendChild(label);
+
+      const btn = document.createElement('button');
+      btn.dataset.idx = i;
+      btn.innerHTML = '&times;';
       btn.addEventListener('click', () => {
-        this._chatAttachedFiles.splice(parseInt(btn.dataset.idx), 1);
+        this._chatAttachedFiles.splice(i, 1);
         this._updateAttachPreview();
       });
+      chip.appendChild(btn);
+
+      this._chatAttachPreview.appendChild(chip);
     });
   }
 
@@ -2989,16 +3134,91 @@ export class EditorView {
     return html;
   }
 
+  // Convert a File to base64 data URL
+  _fileToBase64(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+  }
+
   // Chat with AI — SSE streaming with fallback
   async sendChatMessage(text) {
-    if (!text) return;
+    // Grab attached files before clearing
+    const attachedFiles = [...this._chatAttachedFiles];
+    this._chatAttachedFiles = [];
+    this._updateAttachPreview();
+
+    if (!text && !attachedFiles.length) return;
+
+    // If already streaming, queue the message and send after current stream ends
+    if (this._chatStreaming) {
+      this._chatQueue = this._chatQueue || [];
+      this._chatQueue.push(text);
+      // Show user message immediately so they know it's queued
+      const queuedMsg = h('div', { className: 'chat-message chat-message-user' }, text);
+      this.chatMessages.appendChild(queuedMsg);
+      requestAnimationFrame(() => {
+        if (queuedMsg.scrollHeight > 150) {
+          const btn = document.createElement('button');
+          btn.className = 'chat-msg-expand';
+          btn.textContent = 'Show more';
+          btn.addEventListener('click', () => {
+            queuedMsg.classList.toggle('chat-msg-expanded');
+            btn.textContent = queuedMsg.classList.contains('chat-msg-expanded') ? 'Show less' : 'Show more';
+          });
+          queuedMsg.appendChild(btn);
+        }
+      });
+      this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+      return;
+    }
+    this._chatStreaming = true;
+    this._chatAbortController = new AbortController();
+    if (this._chatSendBtn) this._chatSendBtn.innerHTML = this._stopSvg;
 
     // Clear welcome screen on first message
     const welcome = this.chatMessages.querySelector('.chat-welcome');
     if (welcome) welcome.remove();
 
-    // Add user message
-    const userMsg = h('div', { className: 'chat-message chat-message-user' }, text);
+    // Add user message with optional image previews
+    const userMsg = h('div', { className: 'chat-message chat-message-user' });
+    if (text) {
+      const textNode = document.createElement('span');
+      textNode.textContent = text;
+      userMsg.appendChild(textNode);
+    }
+    // Show image thumbnails in the message bubble
+    const imageFiles = attachedFiles.filter(f => f.type.startsWith('image/'));
+    if (imageFiles.length) {
+      const imgRow = document.createElement('div');
+      imgRow.className = 'chat-msg-images';
+      for (const f of imageFiles) {
+        const img = document.createElement('img');
+        const url = URL.createObjectURL(f);
+        img.src = url;
+        img.onload = () => URL.revokeObjectURL(url);
+        img.addEventListener('click', () => {
+          img.classList.toggle('chat-msg-img-expanded');
+        });
+        imgRow.appendChild(img);
+      }
+      userMsg.appendChild(imgRow);
+    }
+    // Show non-image file names
+    const otherFiles = attachedFiles.filter(f => !f.type.startsWith('image/'));
+    if (otherFiles.length) {
+      const fileList = document.createElement('div');
+      fileList.className = 'chat-msg-files';
+      for (const f of otherFiles) {
+        const chip = document.createElement('span');
+        chip.className = 'chat-attach-chip';
+        chip.textContent = f.name;
+        fileList.appendChild(chip);
+      }
+      userMsg.appendChild(fileList);
+    }
     this.chatMessages.appendChild(userMsg);
     // Add expand button if message overflows
     requestAnimationFrame(() => {
@@ -3192,11 +3412,21 @@ export class EditorView {
     };
 
     try {
+      // Convert attached images to base64 for the API
+      const images = [];
+      for (const f of attachedFiles) {
+        if (f.type.startsWith('image/')) {
+          const dataUrl = await this._fileToBase64(f);
+          images.push({ name: f.name || 'pasted-image.png', type: f.type, data: dataUrl });
+        }
+      }
+
       // Attempt SSE streaming via SDK endpoint
       const response = await fetch('/api/ai/sdk/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, context, projectPath: this.projectPath, sessionId: this._chatSessionId, editMode: this._chatEditMode }),
+        body: JSON.stringify({ prompt: text || '', context, projectPath: this.projectPath, sessionId: this._chatSessionId, editMode: this._chatEditMode, images }),
+        signal: this._chatAbortController.signal,
       });
 
       if (!response.ok) {
@@ -3227,7 +3457,8 @@ export class EditorView {
           textDiv = document.createElement('div');
           textDiv.className = 'chat-text';
           // If there's a tool group before, attach text as last timeline item with a dot
-          const lastGroup = aiMsg.querySelector('.chat-tool-group:last-of-type');
+          const allTG = aiMsg.querySelectorAll('.chat-tool-group');
+          const lastGroup = allTG.length ? allTG[allTG.length - 1] : null;
           const lastChild = aiMsg.lastElementChild;
           const isTimelineEnd = lastChild === lastGroup
             || lastChild?.classList.contains('chat-thinking-loader')
@@ -3518,7 +3749,8 @@ export class EditorView {
               thinkDetails.appendChild(summary);
               thinkDetails.appendChild(content);
               // Insert thinking inside current tool group to keep timeline continuous
-              const currentGroup = aiMsg.querySelector('.chat-tool-group:last-of-type');
+              const tgAll = aiMsg.querySelectorAll('.chat-tool-group');
+              const currentGroup = tgAll.length ? tgAll[tgAll.length - 1] : null;
               if (currentGroup && !currentGroup.querySelector('.chat-tool-use--response')) {
                 currentGroup.appendChild(thinkDetails);
               } else {
@@ -3572,7 +3804,6 @@ export class EditorView {
             aiMsg.appendChild(errDiv);
             scrollToBottom();
           }
-          // type: 'tool_result' — skip silently
         }
       }
 
@@ -3585,14 +3816,51 @@ export class EditorView {
         textDiv.innerHTML = this._renderMarkdown(textAccumulator);
       }
     } catch (err) {
-      // Network error or stream failure — fallback
       removeThinking();
-      console.warn('SSE streaming failed, falling back:', err.message);
-      aiMsg.innerHTML = '';
-      await this._sendChatFallback(text, context, aiMsg);
+      removeCursor();
+      if (err.name === 'AbortError') {
+        // User cancelled — show interrupted indicator
+        const stopEl = document.createElement('div');
+        stopEl.className = 'chat-interrupted';
+        stopEl.textContent = 'Interrupted';
+        aiMsg.appendChild(stopEl);
+      } else {
+        // Network error or stream failure — fallback
+        console.warn('SSE streaming failed, falling back:', err.message);
+        aiMsg.innerHTML = '';
+        await this._sendChatFallback(text, context, aiMsg);
+      }
     }
 
     scrollToBottom();
+
+    // Release streaming lock and restore send button
+    this._chatStreaming = false;
+    this._chatAbortController = null;
+    if (this._chatSendBtn) this._chatSendBtn.innerHTML = this._sendSvg;
+
+    // Process queued messages
+    if (this._chatQueue && this._chatQueue.length) {
+      const next = this._chatQueue.shift();
+      this.sendChatMessage(next);
+    }
+  }
+
+  _abortChat() {
+    // Abort the fetch stream
+    if (this._chatAbortController) {
+      this._chatAbortController.abort();
+    }
+    // Kill the CLI process server-side
+    if (this._chatSessionId) {
+      fetch('/api/ai/sdk/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: this._chatSessionId }),
+      }).catch(() => {});
+    }
+    // Clear queue
+    this._chatQueue = [];
   }
 
   // Fallback: non-streaming AI chat
@@ -3685,10 +3953,11 @@ export class EditorView {
   }
 
   async _doWriteback(prop, value) {
-    if (!this.selectedElement || !this.activePage) return;
+    console.log(`[WB] _doWriteback called: ${prop} = ${value}`);
+    if (!this.selectedElement || !this.activePage) { console.log('[WB] ABORT: no selectedElement or activePage'); return; }
 
     // Stop retrying if CSS file is broken
-    if (this._writebackBroken) return;
+    if (this._writebackBroken) { console.log('[WB] ABORT: _writebackBroken=true'); return; }
 
     const element = this.selectedElement;
     const cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase();
@@ -3699,12 +3968,14 @@ export class EditorView {
 
     // 1. Try CSSOM: find the exact rule + file that styles this element
     const source = this._resolveStyleSource(element, cssProp);
+    console.log('[WB] _resolveStyleSource =>', source);
 
     let filePath, selector;
 
     if (source) {
       filePath = source.filePath;
       selector = source.selector;
+      console.log(`[WB] Using source: ${filePath} → ${selector}`);
     } else {
       // 1b. Check if this property is actually inherited/caused by a parent
       const doc = this.iframe?.contentDocument;
@@ -3715,10 +3986,12 @@ export class EditorView {
       ]);
       if (doc && INHERITABLE.has(cssProp)) {
         const inherited = this._traceInheritedStyle(element, cssProp, doc);
+        console.log('[WB] _traceInheritedStyle =>', inherited);
         if (inherited && inherited.file) {
           // The style comes from a parent — edit the parent's rule instead
           filePath = inherited.file;
           selector = inherited.selector;
+          console.log(`[WB] Using inherited: ${filePath} → ${selector}`);
           // Skip to the api.post below
         }
       }
@@ -3731,7 +4004,8 @@ export class EditorView {
         // This beats most real-world selectors (.parent .child = 0,2,0)
         selector = `:where(body):not(#_) ${baseSelector}`;
         const overrideFile = await this._ensureOverrideCSS();
-        if (!overrideFile) return;
+        console.log(`[WB] Fallback override: ${overrideFile} → ${selector}`);
+        if (!overrideFile) { console.log('[WB] ABORT: _ensureOverrideCSS returned null'); return; }
         filePath = overrideFile;
       }
     }
@@ -3740,6 +4014,7 @@ export class EditorView {
     const tokenValue = this._resolveToToken(cssProp, value);
     const finalValue = tokenValue || value;
 
+    console.log(`[WB] POST /api/writeback/css → file=${filePath}, selector=${selector}, prop=${cssProp}, value=${finalValue}`);
     try {
       await api.post('/api/writeback/css', {
         filePath,
@@ -3748,12 +4023,13 @@ export class EditorView {
         value: finalValue,
         mediaQuery,
       });
+      console.log('[WB] SUCCESS');
       this._writebackBroken = false;
     } catch (err) {
-      console.error('Writeback failed:', err);
+      console.error('[WB] FAILED:', err);
       if (err.message?.includes('parse error') || err.message?.includes('Unexpected') || err.message?.includes('Tailwind')) {
         this._writebackBroken = true;
-        console.warn('CSS writeback paused:', err.message);
+        console.warn('[WB] CSS writeback paused:', err.message);
       }
     }
   }
@@ -6611,11 +6887,16 @@ export class EditorView {
       this.ws = ws;
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'watch', path: this.projectPath }));
-        // Re-start terminal if it was previously started
-        if (this._termStarted) {
-          this._termStarted = false;
-          if (this._xterm) this._xterm.clear();
-          this._startTerminal();
+        // Re-start all terminal instances on reconnect
+        if (this._termInstances?.size > 0) {
+          for (const [, inst] of this._termInstances) {
+            inst.xterm.clear();
+            inst.started = false;
+          }
+          // Re-start active terminal
+          if (this._activeTermId) {
+            this._switchTerminalInstance(this._activeTermId);
+          }
         }
       };
       let reloadTimer = null;
@@ -6632,23 +6913,25 @@ export class EditorView {
             this.iframe.contentWindow?.location.reload();
           }, 400);
         }
-        // Terminal output
+        // Terminal output (routed by id)
         if (msg.type === 'terminal-output') {
-          this._termWrite(msg.data);
+          this._termWrite(msg.id || 'default', msg.data);
         }
         if (msg.type === 'terminal-ready') {
           console.log('[terminal] ready:', msg);
-          // PTY mode: shell prompt will appear naturally
-          // Pipe mode: show a connection message
-          if (!msg.pty && this._xterm) {
-            this._xterm.write(`\x1b[2m${msg.shell} in ${msg.cwd}\x1b[0m\r\n`);
+          const tid = msg.id || 'default';
+          const inst = this._termInstances?.get(tid);
+          if (!msg.pty && inst) {
+            inst.xterm.write(`\x1b[2m${msg.shell} in ${msg.cwd}\x1b[0m\r\n`);
           }
         }
         if (msg.type === 'terminal-exit') {
-          if (this._xterm) {
-            this._xterm.write(`\r\n\x1b[2mProcess exited (code ${msg.code})\x1b[0m\r\n`);
+          const tid = msg.id || 'default';
+          const inst = this._termInstances?.get(tid);
+          if (inst) {
+            inst.xterm.write(`\r\n\x1b[2mProcess exited (code ${msg.code})\x1b[0m\r\n`);
+            inst.started = false;
           }
-          this._termStarted = false;
         }
       };
       ws.onclose = () => {
