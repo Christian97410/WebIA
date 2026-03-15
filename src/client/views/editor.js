@@ -475,6 +475,16 @@ export class EditorView {
     this.chatMessages = h('div', { className: 'chat-messages' });
     this.chatContent.appendChild(this.chatMessages);
 
+    // Delegated click for file links in chat
+    this.chatMessages.addEventListener('click', (e) => {
+      const link = e.target.closest('.chat-file-link');
+      if (!link) return;
+      e.preventDefault();
+      const filePath = link.dataset.path;
+      const line = link.dataset.line;
+      if (filePath) this._openFileFromChat(filePath, line ? parseInt(line) : 0);
+    });
+
     // Context bar (shows selected element info)
     this.chatContextBar = h('div', { className: 'chat-context-bar' });
     this.chatContextBar.style.display = 'none';
@@ -2782,7 +2792,7 @@ export class EditorView {
 
     // Extract code blocks first to protect them
     const codeBlocks = [];
-    let safe = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    let safe = text.replace(/```(\w*)\s*\n([\s\S]*?)```/g, (_m, _lang, code) => {
       const idx = codeBlocks.length;
       codeBlocks.push(`<pre class="chat-code-block"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
       return `\n%%CODEBLOCK_${idx}%%\n`;
@@ -2839,6 +2849,16 @@ export class EditorView {
   _inlineMarkdown(html) {
     // Inline code
     html = html.replace(/`([^`\n]+)`/g, '<code class="chat-code-inline">$1</code>');
+    // Markdown links [text](url) — file links open in editor
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, href) => {
+      // Detect file paths (relative, no protocol)
+      if (!href.match(/^https?:\/\//) && (href.match(/\.\w+/) || href.includes('/'))) {
+        const line = href.match(/#L(\d+)/)?.[1] || '';
+        const cleanPath = href.replace(/#L\d+.*$/, '');
+        return `<a class="chat-file-link" data-path="${cleanPath}" data-line="${line}" title="${cleanPath}">${text}</a>`;
+      }
+      return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+    });
     // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     // Italic
@@ -3070,7 +3090,19 @@ export class EditorView {
         if (!textDiv) {
           textDiv = document.createElement('div');
           textDiv.className = 'chat-text';
-          aiMsg.appendChild(textDiv);
+          // If there's a tool group before, attach text as last timeline item with a dot
+          const lastGroup = aiMsg.querySelector('.chat-tool-group:last-of-type');
+          const lastChild = aiMsg.lastElementChild;
+          if (lastGroup && (lastChild === lastGroup || lastChild?.classList.contains('chat-thinking-loader'))) {
+            const textRow = document.createElement('div');
+            textRow.className = 'chat-tool-use chat-tool-use--response';
+            textRow.innerHTML = '<span class="chat-tool-dot chat-tool-dot--response"></span>';
+            textRow.appendChild(textDiv);
+            lastGroup.appendChild(textRow);
+            updateGroupLine(lastGroup);
+          } else {
+            aiMsg.appendChild(textDiv);
+          }
         }
         return textDiv;
       };
@@ -3088,6 +3120,20 @@ export class EditorView {
           cursorSpan.remove();
           cursorSpan = null;
         }
+      };
+
+      // Recalculate the vertical line height for a tool group
+      const updateGroupLine = (group) => {
+        if (!group) return;
+        requestAnimationFrame(() => {
+          const dots = group.querySelectorAll('.chat-tool-dot');
+          if (dots.length < 2) { group.style.setProperty('--line-h', '0px'); return; }
+          const first = dots[0];
+          const last = dots[dots.length - 1];
+          const firstCenter = first.getBoundingClientRect().top + first.offsetHeight / 2;
+          const lastCenter = last.getBoundingClientRect().top + last.offsetHeight / 2;
+          group.style.setProperty('--line-h', `${lastCenter - firstCenter}px`);
+        });
       };
 
       scrollToBottom();
@@ -3161,7 +3207,7 @@ export class EditorView {
             if (toolGroup) {
               let sib = toolGroup.nextElementSibling;
               while (sib) {
-                if (!sib.classList.contains('chat-thinking-loader')) { shouldBreak = true; break; }
+                if (!sib.classList.contains('chat-thinking-loader') && !sib.classList.contains('chat-thinking')) { shouldBreak = true; break; }
                 sib = sib.nextElementSibling;
               }
             }
@@ -3205,12 +3251,7 @@ export class EditorView {
             toolEl.appendChild(contentWrap);
             toolGroup.appendChild(toolEl);
 
-            // Force reflow so ::before line appears (WebKit/:has() timing issue)
-            if (toolGroup.children.length > 1) {
-              toolGroup.style.display = 'none';
-              toolGroup.offsetHeight; // force reflow
-              toolGroup.style.display = '';
-            }
+            updateGroupLine(toolGroup);
 
             // Add detail line (bash command, search context, etc.)
             if (detail) {
@@ -3250,7 +3291,13 @@ export class EditorView {
               content.className = 'chat-thinking-content';
               thinkDetails.appendChild(summary);
               thinkDetails.appendChild(content);
-              aiMsg.appendChild(thinkDetails);
+              // Insert thinking inside current tool group to keep timeline continuous
+              const currentGroup = aiMsg.querySelector('.chat-tool-group:last-of-type');
+              if (currentGroup && !currentGroup.querySelector('.chat-tool-use--response')) {
+                currentGroup.appendChild(thinkDetails);
+              } else {
+                aiMsg.appendChild(thinkDetails);
+              }
             }
             const thinkContent = thinkDetails.querySelector('.chat-thinking-content');
             thinkContent.textContent += data.content || '';
@@ -4733,6 +4780,18 @@ export class EditorView {
       this._codeBreadcrumb.appendChild(
         h('span', { className: 'code-breadcrumb-seg' }, parts[i])
       );
+    }
+  }
+
+  _openFileFromChat(relativePath, line) {
+    // Resolve relative path to absolute
+    const absPath = relativePath.startsWith('/') ? relativePath : this.projectPath + '/' + relativePath;
+    this._openCodeFile(absPath);
+    if (line && this._cmEditor) {
+      // Scroll to line after content loads
+      setTimeout(() => {
+        if (this._cmEditor.scrollToLine) this._cmEditor.scrollToLine(line);
+      }, 200);
     }
   }
 

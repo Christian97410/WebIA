@@ -1,6 +1,7 @@
 import chokidar from 'chokidar';
 import { spawn } from 'child_process';
 import { platform } from 'os';
+import { shellEnv } from './shell-path.js';
 
 // Try to load node-pty for proper terminal emulation (lazy loaded).
 // node-pty is a native module — it cannot be bundled into a SEA binary,
@@ -79,7 +80,7 @@ export function setupWebSocket(wss) {
               cols,
               rows,
               cwd,
-              env: { ...process.env, LANG: 'en_US.UTF-8' },
+              env: shellEnv({ LANG: 'en_US.UTF-8' }),
             });
 
             terminalProcess.onData((data) => {
@@ -101,9 +102,9 @@ export function setupWebSocket(wss) {
 
         if (!usePty) {
           // Fallback: basic pipes (no ANSI, no resize)
-          terminalProcess = spawn(shell, [], {
+          terminalProcess = spawn(shell, ['-i'], {
             cwd,
-            env: { ...process.env, TERM: 'dumb', LANG: 'en_US.UTF-8' },
+            env: shellEnv({ TERM: 'xterm-256color', LANG: 'en_US.UTF-8' }),
             stdio: ['pipe', 'pipe', 'pipe'],
           });
 

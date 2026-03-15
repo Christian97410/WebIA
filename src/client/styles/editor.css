@@ -862,20 +862,15 @@
   margin: 8px 0;
 }
 
-/* Vertical line from first dot center to last dot center */
+/* Vertical line — height set by JS via --line-h custom property */
 .chat-tool-group::before {
   content: '';
   position: absolute;
   left: 4px;
   top: 11.5px;
-  bottom: 11.5px;
+  height: var(--line-h, 0px);
   width: 1px;
   background: rgba(255,255,255,0.12);
-}
-
-/* Hide line when only one tool in group */
-.chat-tool-group:has(.chat-tool-use:only-child)::before {
-  display: none;
 }
 
 /* Tool use line */
@@ -904,6 +899,22 @@
 .chat-tool-dot--edit { background: #E87443; }
 .chat-tool-dot--write { background: #4ade80; }
 .chat-tool-dot--search { background: #a1a1aa; }
+.chat-tool-dot--response { background: var(--text-tertiary); width: 7px; height: 7px; margin-top: 5px; margin-left: 1px; }
+
+/* Thinking inside tool group — no dot, indented to align with tool content */
+.chat-tool-group > .chat-thinking {
+  margin-left: 17px;
+  padding: 4px 0;
+}
+
+/* Response text row inside tool group */
+.chat-tool-use--response {
+  align-items: flex-start;
+}
+.chat-tool-use--response .chat-text {
+  flex: 1;
+  min-width: 0;
+}
 
 .chat-tool-name {
   font-weight: 600;
@@ -920,6 +931,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* File links in chat */
+.chat-file-link {
+  color: var(--accent, #60a5fa);
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.chat-file-link:hover {
+  border-bottom-color: var(--accent, #60a5fa);
 }
 
 /* Code blocks */
