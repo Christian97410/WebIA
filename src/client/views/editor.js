@@ -2570,6 +2570,195 @@ export class EditorView {
 
     // Re-inject data-wia-id attributes for override CSS selectors
     this._restoreWiaIds(doc);
+
+    // Drag & drop into canvas
+    this._setupCanvasDrop();
+  }
+
+  // ── Drag & drop into canvas ──
+  _setupCanvasDrop() {
+    // Use a document-level dragenter to detect when a drag starts,
+    // then add a transparent drop shield over the iframe to capture events
+    // (iframes swallow drag events from the parent document)
+    if (this._dropInited) return;
+    this._dropInited = true;
+
+    let shield = null;
+
+    const ensureShield = () => {
+      if (shield || !this.canvasWrapper) return;
+      shield = h('div', { className: 'canvas-drop-shield' });
+      shield.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:10;background:transparent;';
+      this.canvasWrapper.appendChild(shield);
+
+      shield.addEventListener('dragover', (e) => {
+        if (this._currentTool === 'navigate') return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        this._showDropIndicator(e);
+      });
+
+      shield.addEventListener('dragleave', (e) => {
+        if (!shield.contains(e.relatedTarget)) {
+          this._clearDropIndicator();
+        }
+      });
+
+      shield.addEventListener('drop', (e) => {
+        if (this._currentTool === 'navigate') return;
+        e.preventDefault();
+        this._clearDropIndicator();
+        removeShield();
+
+        const raw = e.dataTransfer.getData('text/plain');
+        if (!raw) return;
+
+        try {
+          const payload = JSON.parse(raw);
+          if (payload._wiaMedia) {
+            this._handleMediaDrop(payload, e);
+          } else if (payload.tag) {
+            this._handleElementDrop(payload, e);
+          }
+        } catch { /* not valid JSON, ignore */ }
+      });
+    };
+
+    const removeShield = () => {
+      if (shield) { shield.remove(); shield = null; }
+      this._clearDropIndicator();
+    };
+
+    document.addEventListener('dragenter', (e) => {
+      if (e.dataTransfer?.types.includes('text/plain')) {
+        ensureShield();
+      }
+    });
+
+    document.addEventListener('dragend', () => removeShield());
+    document.addEventListener('drop', () => removeShield());
+  }
+
+  _getIframeElementAtPoint(e) {
+    const doc = this.iframe?.contentDocument;
+    if (!doc) return null;
+    const iframeRect = this.iframe.getBoundingClientRect();
+    const x = e.clientX - iframeRect.left;
+    const y = e.clientY - iframeRect.top;
+    if (x < 0 || y < 0 || x > iframeRect.width || y > iframeRect.height) return null;
+    const el = doc.elementFromPoint(x, y);
+    if (!el || el === doc.body || el === doc.documentElement) return null;
+    return el;
+  }
+
+  _showDropIndicator(e) {
+    const el = this._getIframeElementAtPoint(e);
+    const overlay = this.overlay;
+    if (!overlay) return;
+
+    // Remove existing indicator
+    const existing = overlay.querySelector('.drop-indicator');
+
+    if (!el) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const iframeRect = this.iframe.getBoundingClientRect();
+    const wrapperRect = this.canvasWrapper.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+
+    const top = iframeRect.top - wrapperRect.top + elRect.top;
+    const left = iframeRect.left - wrapperRect.left + elRect.left;
+
+    if (existing) {
+      existing.style.top = top + 'px';
+      existing.style.left = left + 'px';
+      existing.style.width = elRect.width + 'px';
+      existing.style.height = elRect.height + 'px';
+    } else {
+      const indicator = h('div', { className: 'drop-indicator' });
+      indicator.style.cssText = `
+        position: absolute;
+        top: ${top}px; left: ${left}px;
+        width: ${elRect.width}px; height: ${elRect.height}px;
+        border: 2px dashed var(--accent);
+        background: rgba(99, 102, 241, 0.06);
+        pointer-events: none;
+        z-index: 100;
+        border-radius: 2px;
+        transition: all 0.1s ease;
+      `;
+      overlay.appendChild(indicator);
+    }
+  }
+
+  _clearDropIndicator() {
+    const ind = this.overlay?.querySelector('.drop-indicator');
+    if (ind) ind.remove();
+  }
+
+  _handleElementDrop(item, e) {
+    const target = this._getIframeElementAtPoint(e);
+
+    // Framework projects: route through AI
+    if (this.devServer) {
+      if (this._requireAIForFramework('Add element')) return;
+      const selCtx = target ? this._describeElement(target) : 'the end of the main component body';
+      let html = `<${item.tag}`;
+      if (item.attrs) for (const [k, v] of Object.entries(item.attrs)) html += v === true ? ` ${k}` : ` ${k}="${v}"`;
+      if (item.selfClosing) { html += ' />'; }
+      else {
+        html += '>';
+        if (item.children) for (const c of item.children) html += `<${c.tag}>${c.text || ''}</${c.tag}>`;
+        else if (item.text) html += item.text;
+        html += `</${item.tag}>`;
+      }
+      this.sendChatMessage(`Add this element inside ${selCtx}:\n${html}`);
+      return;
+    }
+
+    const doc = this.iframe?.contentDocument;
+    if (!doc) return;
+
+    const el = doc.createElement(item.tag);
+    if (item.text) el.textContent = item.text;
+    if (item.attrs) {
+      for (const [k, v] of Object.entries(item.attrs)) {
+        if (v === true) el.setAttribute(k, '');
+        else el.setAttribute(k, v);
+      }
+    }
+    if (item.children) {
+      for (const child of item.children) {
+        const c = doc.createElement(child.tag);
+        if (child.text) c.textContent = child.text;
+        el.appendChild(c);
+      }
+    }
+
+    const parent = target || doc.body;
+    parent.appendChild(el);
+    this.selectElement(el);
+    this._closeAddPanel();
+  }
+
+  _handleMediaDrop(payload, e) {
+    const { url, filename, type, base64 } = payload;
+    const target = this._getIframeElementAtPoint(e);
+    if (target) this.selectElement(target);
+
+    // Download to project then insert
+    const subdir = type === 'video' ? 'videos' : 'images';
+    api.post('/api/media/download-to-project', {
+      url, base64: base64 || null,
+      projectDir: this.projectPath, filename, subdir,
+      isFramework: !!this.devServer,
+    }).then((data) => {
+      this._insertMedia(data.relativePath, type);
+    }).catch((err) => {
+      console.error('Drop media failed:', err);
+    });
   }
 
   // Re-apply data-wia-id attributes that wia-overrides.css targets

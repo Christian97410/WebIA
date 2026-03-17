@@ -128,7 +128,14 @@ export class MediaPanel {
       return;
     }
     for (const img of this.results) {
-      const item = h('div', { className: 'mp-grid-item' });
+      const item = h('div', { className: 'mp-grid-item', draggable: true });
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          _wiaMedia: true, url: img.full || img.preview,
+          filename: `${img.source}-${img.id}.jpg`, type: 'image',
+        }));
+        e.dataTransfer.effectAllowed = 'copy';
+      });
       item.appendChild(h('img', { src: img.thumb || img.preview, loading: 'lazy' }));
       const actions = h('div', { className: 'mp-grid-actions' });
       actions.appendChild(h('button', {
@@ -180,7 +187,14 @@ export class MediaPanel {
       return;
     }
     for (const vid of this.results) {
-      const item = h('div', { className: 'mp-video-item' });
+      const item = h('div', { className: 'mp-video-item', draggable: true });
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          _wiaMedia: true, url: vid.url,
+          filename: `${vid.source}-${vid.id}.mp4`, type: 'video',
+        }));
+        e.dataTransfer.effectAllowed = 'copy';
+      });
 
       // Preview on hover
       const thumb = h('img', { src: vid.thumbnail, loading: 'lazy' });
@@ -256,7 +270,14 @@ export class MediaPanel {
       return;
     }
     for (const ic of this.results) {
-      const item = h('div', { className: 'mp-grid-item mp-icon-item' });
+      const item = h('div', { className: 'mp-grid-item mp-icon-item', draggable: true });
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          _wiaMedia: true, url: ic.preview,
+          filename: `freepik-icon-${ic.id}.png`, type: 'image',
+        }));
+        e.dataTransfer.effectAllowed = 'copy';
+      });
       item.appendChild(h('img', { src: ic.preview, loading: 'lazy' }));
       const actions = h('div', { className: 'mp-grid-actions' });
       actions.appendChild(h('button', {

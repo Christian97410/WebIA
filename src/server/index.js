@@ -187,7 +187,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
   setupWebSocket(wss);
 
   // ── Update check endpoint (works without Tauri IPC) ──
-  const UPDATE_URL = 'https://github.com/Christian97410/WebIA/releases/latest/download/latest.json';
+  const UPDATE_URL = 'https://github.com/Christian97410/WebIA-releases/releases/latest/download/latest.json';
   let cachedUpdate = null;
 
   // Parse --version=X.Y.Z from CLI args
@@ -204,7 +204,7 @@ export async function startServer({ port = 3000, projectPath = null } = {}) {
       const data = await resp.json();
       const latest = data.version;
       const available = latest && latest !== currentVersion && compareVersions(latest, currentVersion) > 0;
-      cachedUpdate = { available, currentVersion, latestVersion: latest, downloadUrl: `https://github.com/Christian97410/WebIA/releases/tag/v${latest}` };
+      cachedUpdate = { available, currentVersion, latestVersion: latest, downloadUrl: `https://github.com/Christian97410/WebIA-releases/releases/tag/v${latest}` };
       res.json(cachedUpdate);
     } catch {
       res.json({ available: false });
