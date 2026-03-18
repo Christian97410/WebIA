@@ -409,12 +409,25 @@ function runCLIAgent({ projectPath, systemPrompt, messages, editMode, sessionId,
       fullPrompt,
     ];
 
-    const child = spawn(claudePath, args, {
-      cwd: projectPath,
-      env: { ...env, CLAUDECODE: '' }, // Avoid nested session check
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    let child;
+    try {
+      child = spawn(claudePath, args, {
+        cwd: projectPath,
+        env: { ...env, CLAUDECODE: '' }, // Avoid nested session check
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (spawnErr) {
+      console.error('[AI-SDK] spawn failed:', spawnErr.code, spawnErr.message);
+      onEvent({ type: 'error', error: `Failed to start Claude: ${spawnErr.code} — ${spawnErr.message}` });
+      resolve({ response: '', changes: [] });
+      return;
+    }
     childRef = child;
+
+    child.on('error', (err) => {
+      console.error('[AI-SDK] child process error:', err.code, err.message);
+      onEvent({ type: 'error', error: `Claude process error: ${err.code} — ${err.message}` });
+    });
 
     // Close stdin immediately — prompt is passed as argument
     child.stdin.end();

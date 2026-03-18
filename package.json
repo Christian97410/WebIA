@@ -20,7 +20,7 @@
     "node": ">=18"
   },
   "bin": {
-    "wia": "./bin/wia.js"
+    "wia": "./bin/wia"
   },
   "files": [
     "bin/",
@@ -28,7 +28,7 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "node src/server/index.js",
+    "dev": "sh -c 'ulimit -n 10240 2>/dev/null; node src/server/index.js'",
     "build": "vite build",
     "start": "node src/server/index.js",
     "tauri": "tauri",

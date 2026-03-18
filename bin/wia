@@ -1,0 +1,8 @@
+#!/bin/sh
+# Increase file descriptor limit (macOS defaults to 256 which is too low for file watchers)
+ulimit -n 10240 2>/dev/null
+
+# Find the directory of this script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+exec node "$SCRIPT_DIR/wia.js" "$@"

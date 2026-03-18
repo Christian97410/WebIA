@@ -41,9 +41,15 @@ export function setupWebSocket(wss) {
 
         const dir = msg.path;
         projectWatcher = chokidar.watch(dir, {
-          ignored: /(node_modules|\.git|\.next|\.nuxt|\.svelte-kit|dist|\.turbo|\.cache)/,
+          ignored: /(node_modules|\.git|\.next|\.nuxt|\.svelte-kit|dist|\.turbo|\.cache|\.vercel|\.wia-sandbox)/,
           ignoreInitial: true,
           awaitWriteFinish: { stabilityThreshold: 300 },
+          usePolling: false,
+          depth: 10,
+        });
+
+        projectWatcher.on('error', (err) => {
+          console.warn('[watcher] error (non-fatal):', err.message);
         });
 
         projectWatcher.on('change', (filePath) => {
